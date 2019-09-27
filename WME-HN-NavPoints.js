@@ -1,307 +1,401 @@
+/* eslint-disable no-template-curly-in-string */
 // ==UserScript==
-// @name            WME HN NavPoints
-// @version			0.6.6
-// @authorCZ		MajkiiTelini
-// @description		Shows navigation points of all house numbers in WME
-// @include			/^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
-// @run-at			document-end
-// @namespace		https://greasyfork.org/cs/users/135686
+// @name            WME HN NavPoints (beta)
+// @namespace       https://greasyfork.org/users/166843
+// @description     Shows navigation points of all house numbers in WME
+// @version         2019.09.27.01
+// @author          dBsooner
+// @authorCZ        MajkiiTelini
+// @grant           none
+// @require         https://greasyfork.org/scripts/24851-wazewrap/code/WazeWrap.js
+// @license         GPLv3
+// @include         /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor\/?.*$/
+// @contributionURL https://github.com/WazeDev/Thank-The-Authors
 // ==/UserScript==
 
-var W = unsafeWindow.W;
-var OL = unsafeWindow.OL;
-var I18n = unsafeWindow.I18n;
-var epsg900913 = new OL.Projection("EPSG:900913");
-var epsg4326 = new OL.Projection("EPSG:4326");
-var HNNavPointsLayer;
-var HNNavPointsNumbersLayer;
-var oldSegmentsId = [];
-var lastDownloadTime = Date.now();
-var layerTogglers = {};
-const maxZoom = 5;
+/* global $, document, GM_info, localStorage, MutationObserver, OL, performance, W, WazeWrap, window */
 
-HNNavPoints_init();
+/*
+ * Original concept and code for WME HN NavPoints was written by MajkiiTelini. After version 0.6.6, this
+ * script is maintained by the WazeDev team. Special thanks is definitely given to MajkiiTelini for his
+ * hard work and dedication to the original script.
+ *
+ */
 
-function HNNavPoints_init(e) {
-	if (e && e.user === null) {
-		return;
-	}
-	if (typeof W === "undefined" || typeof W.loginManager === "undefined" || typeof W.map === "undefined" || typeof OL === "undefined" || document.querySelector(".list-unstyled.togglers .group") === null) {
-		setTimeout(HNNavPoints_init, 100);
-		return;
-	}
-	if (!W.loginManager.user) {
-		W.loginManager.events.register("login", null, HNNavPoints_init);
-		W.loginManager.events.register("loginStatus", null, HNNavPoints_init);
-		if (!W.loginManager.user) {
-			return;
-		}
-	}
-	HNNavPointsLayer = new OL.Layer.Vector("HN NavPoints Layer", {
-		displayInLayerSwitcher: true,
-		uniqueName: "__HNNavPointsLayer"
-	});
-	HNNavPointsNumbersLayer = new OL.Layer.Vector("HN NavPoints Numbers Layer", {
-		displayInLayerSwitcher: true,
-		uniqueName: "__HNNavPointsNumbersLayer",
-		styleMap: new OL.StyleMap({'default':{
-			strokeColor: "${Color}",
-			strokeOpacity: 1,
-			strokeWidth: 3,
-			fillColor: "${Color}",
-			fillOpacity: 0.5,
-			pointerEvents: "visiblePainted",
-			label : "${hn_number}",
-			fontSize: "12px",
-			fontFamily: "Arial Black, monospace",
-			fontWeight: "bold",
-			labelOutlineColor: "${Color}",
-			labelOutlineWidth: 3
-		}})
-	});
-	var displayGroupSelector = document.getElementById("layer-switcher-group_display");
-	if (displayGroupSelector !== null) {
-		layerTogglers.hnLines = addLayerToggler(displayGroupSelector, HNNavPointsLayer, "hnLines", "HN NavPoints");
-		layerTogglers.hnNumbers = addLayerToggler(displayGroupSelector, HNNavPointsNumbersLayer, "hnNumbers", "HN NavPoints Numbers");
-	}
-	W.map.addLayer(HNNavPointsLayer);
-	W.map.addLayer(HNNavPointsNumbersLayer);
-	function saveHNNavPointsOptions() {
-		if (localStorage) {
-			var options = {};
-			for (var key in layerTogglers) {
-				options[key] = document.getElementById(layerTogglers[key].htmlItem).checked;
-			}
-			localStorage.WMEHNNavPoints = JSON.stringify(options);
-		}
-	}
-	window.addEventListener("beforeunload", saveHNNavPointsOptions, false);
-	if (localStorage.WMEHNNavPoints) {
-		var options = JSON.parse(localStorage.WMEHNNavPoints);
-		for (var key in layerTogglers) {
-			document.getElementById(layerTogglers[key].htmlItem).checked = options[key];
-			layerTogglers[key].layer.setVisibility(options[key] & !document.getElementById(layerTogglers[key].htmlItem).disabled & W.map.zoom >= maxZoom);
-		}
-	}
-	W.map.events.register("zoomend", null, requestHNs);
-	W.map.events.register("moveend", null, requestHNs);
-	W.model.events.register("mergeend", null, requestHNs);
-	W.map.baseLayer.events.register("loadend", null, requestHNs);
-	W.model.actionManager.events.register("afterclearactions", null, requestHNs);
-	W.model.actionManager.events.register("afteraction", null, requestHNs);
-	W.model.actionManager.events.register("afterundoaction", null, requestHNs);
-	W.model.actionManager.events.register("afterundoaction", null, setMarkersEvents);
-	W.model.actionManager.events.register("noActions", null, requestHNs);
-	W.accelerators.events.register("reloadData", null, requestHNs);
-	W.editingMediator.on("change:editingHouseNumbers", requestHNs);
-	W.editingMediator.on("change:editingHouseNumbers", setMarkersEvents);
-	W.editingMediator.on("change:editingHouseNumbers", observeHNLayer);
-	requestHNs();
+const ALERT_UPDATE = true,
+    DEBUG = true,
+    LOAD_BEGIN_TIME = performance.now(),
+    SCRIPT_FORUM_URL = 'https://www.waze.com/forum/viewtopic.php?f=819&t=289116',
+    SCRIPT_GF_URL = 'https://greasyfork.org/en/scripts/390565-wme-hn-navpoints',
+    SCRIPT_NAME = GM_info.script.name.replace('(beta)', 'β'),
+    SCRIPT_VERSION = GM_info.script.version,
+    SCRIPT_VERSION_CHANGES = ['<b>NEW:</b> Initial WazeDev version release.',
+        '<b>NEW:</b> Updated to utilize WazeWrap features.',
+        '<b>NEW:</b> Settings saved to WazeWrap for easy access from other browsers.',
+        '<b>CHANGE:</b> Lots of under the hood stuff to enhance experience.',
+        '<b>BUGFIX:</b> Keyboard shortcuts to toggle layers now remembered.'
+    ],
+    SETTINGS_STORE_NAME = 'WMEHNNavPoints',
+    _timeouts = {
+        bootstrap: undefined,
+        observeRemovedLine: {},
+        saveSettingsToStorage: undefined,
+        setMarkerEvents: undefined
+    };
+
+let _settings = {},
+    _HNNavPointsLayer,
+    _HNNavPointsNumbersLayer,
+    _lastDownloadTime = Date.now(),
+    _oldSegmentsId = [];
+
+function log(message) { console.log('WME-HN-NavPoints:', message); }
+function logError(message) { console.error('WME-HN-NavPoints:', message); }
+// function logWarning(message) { console.warn('WME-HN-NavPoints:', message); }
+function logDebug(message) {
+    if (DEBUG)
+        console.log('WME-HN-NavPoints:', message);
 }
 
-function addLayerToggler(groupCheckbox, layer, checkboxId, text) {
-	var layerToggler = {};
-	layerToggler.htmlItem = "layer-switcher-item_hnnavpoints_" + checkboxId;
-	layerToggler.layer = layer;
-	var displayGroup = groupCheckbox.parentNode.parentNode.parentNode.parentNode.getElementsByTagName("UL")[0];
-	var toggler = document.createElement("li");
-	var togglerContainer = document.createElement("div");
-	var checkbox = document.createElement("input");
-	var label = document.createElement("label");
-	var labelText = document.createElement("span");
-	togglerContainer.className = "wz-checkbox";
-	checkbox.type = "checkbox";
-	checkbox.id = layerToggler.htmlItem;
-	checkbox.className = "toggle";
-	checkbox.disabled = !groupCheckbox.checked;
-	togglerContainer.appendChild(checkbox);
-	label.htmlFor = checkbox.id;
-	labelText.className = "label-text";
-	labelText.appendChild(document.createTextNode(text));
-	label.appendChild(labelText);
-	togglerContainer.appendChild(label);
-	toggler.appendChild(togglerContainer);
-	displayGroup.appendChild(toggler);
-	checkbox.addEventListener("click", layerTogglerEventHandler(layer));
-	groupCheckbox.addEventListener("click", layerTogglerGroupEventHandler(checkbox, layer));
-	registerKeyShortcut(text, layerKeyShortcutEventHandler(groupCheckbox, checkbox), text.replace(/\s+/g, ''));
-	return layerToggler;
+function loadSettingsFromStorage() {
+    return new Promise(async resolve => {
+        const defaultSettings = {
+                hnLines: true,
+                hnNumbers: true,
+                toggleHNNavPointsShortcut: '',
+                toggleHNNavPointsNumbersShortcut: '',
+                lastSaved: 0,
+                lastVersion: undefined
+            },
+            loadedSettings = $.parseJSON(localStorage.getItem(SETTINGS_STORE_NAME));
+        _settings = $.extend({}, defaultSettings, loadedSettings);
+        const serverSettings = await WazeWrap.Remote.RetrieveSettings(SETTINGS_STORE_NAME);
+        if (serverSettings && (serverSettings.lastSaved > _settings.lastSaved))
+            $.extend(_settings, serverSettings);
+        _timeouts.saveSettingsToStorage = window.setTimeout(saveSettingsToStorage, 5000);
+        resolve();
+    });
 }
 
-function registerKeyShortcut(actionName, callback, keyName) {
-	I18n.translations[I18n.locale].keyboard_shortcuts.groups.default.members[keyName] = actionName;
-	W.accelerators.addAction(keyName, {group: "default"});
-	W.accelerators.events.register(keyName, null, callback);
-	W.accelerators._registerShortcuts({[""]: keyName});
+function saveSettingsToStorage() {
+    checkTimeout({ timeout: 'saveSettingsToStorage' });
+    if (localStorage) {
+        _settings.lastVersion = SCRIPT_VERSION;
+        _settings.lastSaved = Date.now();
+        localStorage.setItem(SETTINGS_STORE_NAME, JSON.stringify(_settings));
+        WazeWrap.Remote.SaveSettings(SETTINGS_STORE_NAME, _settings);
+        logDebug('Settings saved.');
+    }
 }
 
-function layerKeyShortcutEventHandler(groupCheckbox, checkbox) {
-	return function() {
-		if (!groupCheckbox.disabled) {
-			checkbox.click();
-		}
-	};
+function showScriptInfoAlert() {
+    if (ALERT_UPDATE && SCRIPT_VERSION !== _settings.lastVersion) {
+        let releaseNotes = '';
+        releaseNotes += '<p>What\'s New:</p>';
+        if (SCRIPT_VERSION_CHANGES.length > 0) {
+            releaseNotes += '<ul>';
+            for (let idx = 0; idx < SCRIPT_VERSION_CHANGES.length; idx++)
+                releaseNotes += `<li>${SCRIPT_VERSION_CHANGES[idx]}`;
+            releaseNotes += '</ul>';
+        }
+        else {
+            releaseNotes += '<ul><li>Nothing major.</ul>';
+        }
+        WazeWrap.Interface.ShowScriptUpdate(SCRIPT_NAME, SCRIPT_VERSION, releaseNotes, SCRIPT_GF_URL, SCRIPT_FORUM_URL);
+    }
 }
 
-function layerTogglerEventHandler(layer) {
-	return function() {
-		layer.setVisibility(this.checked & W.map.zoom >= maxZoom);
-		requestHNs();
-	};
+function getRandomId() {
+    return Math.random().toString(36).slice(2);
 }
 
-function layerTogglerGroupEventHandler(checkbox, layer) {
-	return function() {
-		layer.setVisibility(this.checked & checkbox.checked & W.map.zoom >= maxZoom);
-		checkbox.disabled = !this.checked;
-		requestHNs();
-	};
+function checkShortcutsChanged() {
+    let triggerSave = false;
+    ['toggleHNNavPointsShortcut', 'toggleHNNavPointsNumbersShortcut'].forEach(k => {
+        let keys = '';
+        const { shortcut } = W.accelerators.Actions[k];
+        if (shortcut) {
+            if (shortcut.altKey)
+                keys += 'A';
+            if (shortcut.shiftKey)
+                keys += 'S';
+            if (shortcut.ctrlKey)
+                keys += 'C';
+            if (keys !== '')
+                keys += '+';
+            if (shortcut.keyCode)
+                keys += shortcut.keyCode;
+        }
+        else {
+            keys = '';
+        }
+        if (_settings[k] !== keys) {
+            _settings[k] = keys;
+            triggerSave = true;
+        }
+    });
+    if (triggerSave)
+        saveSettingsToStorage();
 }
 
-function requestHNs() {
-	HNNavPointsLayer.setVisibility(document.getElementById(layerTogglers.hnLines.htmlItem).checked & !document.getElementById(layerTogglers.hnLines.htmlItem).disabled & W.map.zoom >= maxZoom);
-	HNNavPointsNumbersLayer.setVisibility(document.getElementById(layerTogglers.hnNumbers.htmlItem).checked & !document.getElementById(layerTogglers.hnNumbers.htmlItem).disabled & W.map.zoom >= maxZoom);
-	if (!HNNavPointsLayer.getVisibility() && !HNNavPointsNumbersLayer.getVisibility()) {
-		return;
-	}
-	var eg = W.map.getExtent().toGeometry();
-	var objSeg = W.model.segments.objects;
-	var actSegmentsId = Object.keys(objSeg).filter(function(key) {
-		if (objSeg[key].attributes.hasHNs && eg.intersects(objSeg[key].geometry)) {return key;}
-	}).map(function (key) {
-		return key;
-	});
-	var releasedSegmentsId = oldSegmentsId.filter(function(key) {return actSegmentsId.indexOf(key) < 0;});
-	for (var i = 0; i < releasedSegmentsId.length; i++) {
-		HNNavPointsLayer.removeFeatures(HNNavPointsLayer.getFeaturesByAttribute("segmentId", parseInt(releasedSegmentsId[i])));
-		HNNavPointsNumbersLayer.removeFeatures(HNNavPointsNumbersLayer.getFeaturesByAttribute("segmentId", parseInt(releasedSegmentsId[i])));
-	}
-	var objHNs = W.model.segmentHouseNumbers.objects;
-	for (var j in objHNs) {
-		drawHNLine("MODEL", objHNs[j]);
-	}
-	var loadedSegmentsId = actSegmentsId.filter(function(key) {
-		if (Object.keys(objHNs).indexOf(key) >= 0) {
-			return false;
-		} else {
-			return (oldSegmentsId.indexOf(key) < 0 || lastDownloadTime < objSeg[key].attributes.updatedOn) ? true : false;
-		}
-	});
-	oldSegmentsId = actSegmentsId;
-	if (loadedSegmentsId.length > 0) {
-		lastDownloadTime = Date.now();
-		$.ajax({
-			dataType: "json",
-			url: getDownloadURL(),
-			data: {ids: loadedSegmentsId.join(",")},
-			success: function(json) {
-				if (json.error !== undefined) {
-				} else {
-					var ids = [];
-					if ("undefined" !== typeof(json.segmentHouseNumbers.objects)) {
-						for (var k = 0; k < json.segmentHouseNumbers.objects.length; k++) {
-							drawHNLine("JSON", json.segmentHouseNumbers.objects[k]);
-						}
-					}
-				}
-			}
-		});
-	}
+function checkTimeout(obj) {
+    if (obj.toIndex) {
+        if (_timeouts[obj.timeout] && (_timeouts[obj.timeout][obj.toIndex] !== undefined)) {
+            window.clearTimeout(_timeouts[obj.timeout][obj.toIndex]);
+            _timeouts[obj.timeout][obj.toIndex] = undefined;
+        }
+    }
+    else {
+        if (_timeouts[obj.timeout] !== undefined)
+            window.clearTimeout(_timeouts[obj.timeout]);
+        _timeouts[obj.timeout] = undefined;
+    }
 }
 
-function getDownloadURL(){
-	var downloadURL = "https://www.waze.com";
-	if (~document.URL.indexOf("https://beta.waze.com")) {
-		downloadURL = "https://beta.waze.com";
-	}
-	downloadURL += W.Config.paths.houseNumbers;
-	return downloadURL;
+function hnLayerToggled(checked) {
+    _HNNavPointsLayer.setVisibility(checked);
+    _settings.hnLines = checked;
+    saveSettingsToStorage();
+    if (checked)
+        requestHNs();
 }
 
-function drawHNLine(type, houseNumber) {
-	var seg = W.model.segments.objects[houseNumber.segID];
-	if (seg) {
-		var streetId = seg.attributes.primaryStreetID;
-		HNNavPointsLayer.removeFeatures(HNNavPointsLayer.getFeaturesByAttribute("featureId", streetId + "|" + houseNumber.number + "|" + houseNumber.id));
-		HNNavPointsNumbersLayer.removeFeatures(HNNavPointsNumbersLayer.getFeaturesByAttribute("featureId", streetId + "|" + houseNumber.number + "|" + houseNumber.id));
-		var p1, p2;
-		var featureId = streetId + "|" + houseNumber.number + "|" + houseNumber.id;
-		if (type == "JSON") {
-			p1 = new OL.Geometry.Point(houseNumber.fractionPoint.coordinates[0], houseNumber.fractionPoint.coordinates[1]).transform(epsg4326, epsg900913);
-			p2 = new OL.Geometry.Point(houseNumber.geometry.coordinates[0], houseNumber.geometry.coordinates[1]).transform(epsg4326, epsg900913);
-		} else {
-			p1 = new OL.Geometry.Point(houseNumber.fractionPoint.x, houseNumber.fractionPoint.y);
-			p2 = new OL.Geometry.Point(houseNumber.geometry.x, houseNumber.geometry.y);
-		}
-		var lineString = new OL.Geometry.LineString([p1, p2]);
-		var lineFeature = new OL.Feature.Vector(lineString, {streetId : streetId, segmentId : houseNumber.segID, featureId : featureId}, {strokeWidth: 4, strokeColor: "black", strokeOpacity: 0.5, strokeDashstyle: "dash", strokeDashArray: "8, 8"});
-		var strokeColor;
-		if (houseNumber.forced) {
-			strokeColor = (!houseNumber.hasOwnProperty("updatedBy")) ? "red" : "orange";
-		}
-		else {
-			strokeColor = (!houseNumber.hasOwnProperty("updatedBy")) ? "yellow" : "white";
-		}
-		HNNavPointsLayer.addFeatures(lineFeature);
-		lineString = new OL.Geometry.LineString([p1, p2]);
-		lineFeature = new OL.Feature.Vector(lineString, {streetId : streetId, segmentId : houseNumber.segID, featureId : featureId}, {strokeWidth: 2, strokeColor: strokeColor, strokeOpacity: 1, strokeDashstyle: "dash", strokeDashArray: "8, 8"});
-		HNNavPointsLayer.addFeatures(lineFeature);
-		HNNavPointsNumbersLayer.addFeatures(new OL.Feature.Vector(new OL.Geometry.Polygon.createRegularPolygon(p2, 1, 20), {streetId : streetId, segmentId : houseNumber.segID, featureId : featureId, hn_number: houseNumber.number, strokeWidth: 3, Color: strokeColor}));
-	}
-}
-
-function setMarkersEvents() {
-	if (W.editingMediator.attributes.editingHouseNumbers) {
-		if (W.map.getLayersByName("houseNumberMarkers")[0].markers.length == 0) {
-			setTimeout(setMarkersEvents, 50);
-			return;
-		}
-		for (var marker of W.map.getLayersByName("houseNumberMarkers")[0].markers) {
-			marker.events.register("click:input", null, markerRemoveLine(marker, false));
-			marker.events.register("delete", null, markerRemoveLine(marker, true));
-		}
-	}
-}
-
-function markerRemoveLine(marker, permanent) {
-	return function(){
-		var HNtoRemove = W.model.segments.objects[marker.model.attributes.segID].attributes.primaryStreetID + "|" + marker.model.attributes.number + "|" + marker.model.attributes.id;
-		var linesToRemove = HNNavPointsLayer.getFeaturesByAttribute("featureId", HNtoRemove);
-		if (linesToRemove.length > 0) {
-			HNNavPointsLayer.removeFeatures(linesToRemove);
-			HNNavPointsNumbersLayer.removeFeatures(linesToRemove);
-			if (!permanent) {
-				observeRemovedLineTimer(marker);
-			}
-		}
-		if (W.map.getLayersByName("houseNumberMarkers")[0].markers[0].events.listeners.delete.length < 2) {
-			setMarkersEvents();
-		}
-	}
-}
-
-function observeRemovedLineTimer(marker) {
-	setTimeout(function(){
-		if (marker.dragging.active) {
-			observeRemovedLineTimer(marker);
-		} else {
-			if (marker.model.attributes.number !== "" & W.map.getLayersByName("houseNumberMarkers")[0].markers.includes(marker)) {
-				drawHNLine("MODEL", W.model.segmentHouseNumbers.objects[marker.model.attributes.id].attributes);
-			}
-		}
-	}, 50);
+function hnNumbersLayerToggled(checked) {
+    _HNNavPointsNumbersLayer.setVisibility(checked);
+    _settings.hnNumbers = checked;
+    saveSettingsToStorage();
+    if (checked)
+        requestHNs();
 }
 
 function observeHNLayer() {
-	if (W.editingMediator.attributes.editingHouseNumbers) {
-		var observer = new MutationObserver(function(mutationsList, observer) {
-			for(var mutation of mutationsList) {
-				var input = $('div.olLayerDiv.house-numbers-layer div.house-number div.content.active:not(".new") input.number');
-				if (input.val() === "") {
-					input[0].addEventListener("change", setMarkersEvents);
-				}
-			}
-		});
-		observer.observe($('div.olLayerDiv.house-numbers-layer')[0], { childList:false, subtree:true, attributes: true });
-	}
+    if (W.editingMediator.attributes.editingHouseNumbers) {
+        const observer = new MutationObserver(mutationsList => {
+            mutationsList.forEach(() => {
+                const input = $('div.olLayerDiv.house-numbers-layer div.house-number div.content.active:not(".new") input.number');
+                if (input.val() === '')
+                    input[0].addEventListener('change', setMarkersEvents);
+            });
+        });
+        observer.observe($('div.olLayerDiv.house-numbers-layer')[0], { childList: false, subtree: true, attributes: true });
+    }
 }
+
+function observeRemovedLine(marker, toIndex) {
+    checkTimeout({ timeout: 'observeRemovedLine', toIndex });
+    if (marker.dragging.active)
+        _timeouts.observeRemovedLine[toIndex] = window.setTimeout(observeRemovedLine, 50, marker, toIndex);
+    else if (marker.model.attributes.number !== '' && W.map.getLayersByName('houseNumberMarkers')[0].markers.includes(marker))
+        drawHNLine('MODEL', W.model.segmentHouseNumbers.objects[marker.model.attributes.id].attributes);
+}
+
+function markerRemoveLine(marker, permanent) {
+    return function () {
+        const HNtoRemove = `${W.model.segments.objects[marker.model.attributes.segID].attributes.primaryStreetID}|${marker.model.attributes.number}|${marker.model.attributes.id}`,
+            linesToRemove = _HNNavPointsLayer.getFeaturesByAttribute('featureId', HNtoRemove);
+        if (linesToRemove.length > 0) {
+            _HNNavPointsLayer.removeFeatures(linesToRemove);
+            _HNNavPointsNumbersLayer.removeFeatures(linesToRemove);
+            if (!permanent)
+                observeRemovedLine(marker, getRandomId());
+        }
+        if (W.map.getLayersByName('houseNumberMarkers')[0].markers[0].events.listeners.delete.length < 2)
+            setMarkersEvents();
+    };
+}
+
+function setMarkersEvents() {
+    if (W.editingMediator.attributes.editingHouseNumbers) {
+        checkTimeout({ timeout: 'setMarkerEvents' });
+        if (W.map.getLayersByName('houseNumberMarkers')[0].markers.length === 0) {
+            _timeouts.setMarkerEvents = window.setTimeout(setMarkersEvents, 50);
+            return;
+        }
+        W.map.getLayersByName('houseNumberMarkers')[0].markers.forEach(marker => {
+            marker.events.register('click:input', null, markerRemoveLine(marker, false));
+            marker.events.register('delete', null, markerRemoveLine(marker, true));
+        });
+    }
+}
+
+function drawHNLine(type, houseNumber) {
+    const seg = W.model.segments.objects[houseNumber.segID];
+    if (seg) {
+        const streetId = seg.attributes.primaryStreetID,
+            featureId = `${streetId}|${houseNumber.number}|${houseNumber.id}`;
+        _HNNavPointsLayer.removeFeatures(_HNNavPointsLayer.getFeaturesByAttribute('featureId', featureId));
+        _HNNavPointsNumbersLayer.removeFeatures(_HNNavPointsNumbersLayer.getFeaturesByAttribute('featureId', featureId));
+        const epsg900913 = new OL.Projection('EPSG:900913'),
+            epsg4326 = new OL.Projection('EPSG:4326'),
+            p1 = (type === 'JSON')
+                ? new OL.Geometry.Point(houseNumber.fractionPoint.coordinates[0], houseNumber.fractionPoint.coordinates[1]).transform(epsg4326, epsg900913)
+                : new OL.Geometry.Point(houseNumber.fractionPoint.x, houseNumber.fractionPoint.y),
+            p2 = (type === 'JSON')
+                ? new OL.Geometry.Point(houseNumber.geometry.coordinates[0], houseNumber.geometry.coordinates[1]).transform(epsg4326, epsg900913)
+                : new OL.Geometry.Point(houseNumber.geometry.x, houseNumber.geometry.y),
+            // eslint-disable-next-line no-nested-ternary
+            strokeColor = (houseNumber.forced
+                ? (!houseNumber.hasOwnProperty('updatedBy')) ? 'red' : 'orange'
+                : (!houseNumber.hasOwnProperty('updatedBy')) ? 'yellow' : 'white'
+            );
+        let lineString = new OL.Geometry.LineString([p1, p2]),
+            lineFeature = new OL.Feature.Vector(
+                lineString,
+                { streetId, segmentId: houseNumber.segID, featureId },
+                {
+                    strokeWidth: 4, strokeColor: 'black', strokeOpacity: 0.5, strokeDashstyle: 'dash', strokeDashArray: '8, 8'
+                }
+            );
+        _HNNavPointsLayer.addFeatures(lineFeature);
+        lineString = new OL.Geometry.LineString([p1, p2]);
+        lineFeature = new OL.Feature.Vector(
+            lineString,
+            { streetId, segmentId: houseNumber.segID, featureId },
+            {
+                strokeWidth: 2, strokeColor, strokeOpacity: 1, strokeDashstyle: 'dash', strokeDashArray: '8, 8'
+            }
+        );
+        _HNNavPointsLayer.addFeatures(lineFeature);
+        // eslint-disable-next-line new-cap
+        _HNNavPointsNumbersLayer.addFeatures(new OL.Feature.Vector(new OL.Geometry.Polygon.createRegularPolygon(p2, 1, 20), {
+            streetId, segmentId: houseNumber.segID, featureId, hn_number: houseNumber.number, strokeWidth: 3, Color: strokeColor
+        }));
+    }
+}
+
+
+function requestHNs() {
+    if ((!_HNNavPointsLayer.getVisibility() && !_HNNavPointsNumbersLayer.getVisibility())
+        || (W.map.getZoom() < 5))
+        return;
+    const eg = W.map.getExtent().toGeometry(),
+        objSeg = W.model.segments.objects,
+        actSegmentsId = Object.keys(objSeg).filter(key => {
+            if (objSeg[key].attributes.hasHNs && eg.intersects(objSeg[key].geometry))
+                return key;
+            return false;
+        }).map(key => key),
+        releasedSegmentsId = _oldSegmentsId.filter(key => actSegmentsId.indexOf(key) < 0);
+    for (let i = 0; i < releasedSegmentsId.length; i++) {
+        _HNNavPointsLayer.removeFeatures(_HNNavPointsLayer.getFeaturesByAttribute('segmentId', parseInt(releasedSegmentsId[i])));
+        _HNNavPointsNumbersLayer.removeFeatures(_HNNavPointsNumbersLayer.getFeaturesByAttribute('segmentId', parseInt(releasedSegmentsId[i])));
+    }
+    const objHNs = W.model.segmentHouseNumbers.objects;
+    if (objHNs.length > 0) {
+        objHNs.forEach(hn => {
+            drawHNLine('MODEL', hn);
+        });
+    }
+    const loadedSegmentsId = actSegmentsId.filter(key => {
+        if (Object.keys(objHNs).indexOf(key) >= 0)
+            return false;
+        return ((_oldSegmentsId.indexOf(key) < 0) || (_lastDownloadTime < objSeg[key].attributes.updatedOn));
+    });
+    _oldSegmentsId = actSegmentsId;
+    if (loadedSegmentsId.length > 0) {
+        _lastDownloadTime = Date.now();
+        $.ajax({
+            dataType: 'json',
+            url: `${((document.URL.indexOf('https://beta.waze.com') > -1) ? 'https://beta.waze.com' : 'https://www.waze.com')}${W.Config.paths.houseNumbers}`,
+            data: { ids: loadedSegmentsId.join(',') },
+            success(json) {
+                if (json.error === undefined) {
+                    if (typeof json.segmentHouseNumbers.objects !== 'undefined') {
+                        for (let k = 0; k < json.segmentHouseNumbers.objects.length; k++)
+                            drawHNLine('JSON', json.segmentHouseNumbers.objects[k]);
+                    }
+                }
+            }
+        });
+    }
+}
+
+async function init() {
+    log('Initializing.');
+    await loadSettingsFromStorage();
+    _HNNavPointsLayer = new OL.Layer.Vector('HN NavPoints Layer', {
+        displayInLayerSwitcher: true,
+        uniqueName: '__HNNavPointsLayer'
+    });
+    _HNNavPointsNumbersLayer = new OL.Layer.Vector('HN NavPoints Numbers Layer', {
+        displayInLayerSwitcher: true,
+        uniqueName: '__HNNavPointsNumbersLayer',
+        styleMap: new OL.StyleMap(
+            {
+                default: {
+                    strokeColor: '${Color}',
+                    strokeOpacity: 1,
+                    strokeWidth: 3,
+                    fillColor: '${Color}',
+                    fillOpacity: 0.5,
+                    pointerEvents: 'visiblePainted',
+                    label: '${hn_number}',
+                    fontSize: '12px',
+                    fontFamily: 'Arial Black, monospace',
+                    fontWeight: 'bold',
+                    labelOutlineColor: '${Color}',
+                    labelOutlineWidth: 3
+                }
+            }
+        )
+    });
+    W.map.addLayer(_HNNavPointsLayer);
+    W.map.addLayer(_HNNavPointsNumbersLayer);
+    _HNNavPointsLayer.setVisibility(_settings.hnLines);
+    _HNNavPointsNumbersLayer.setVisibility(_settings.hnNumbers);
+    WazeWrap.Interface.AddLayerCheckbox('display', 'HN NavPoints', _settings.hnLines, hnLayerToggled);
+    WazeWrap.Interface.AddLayerCheckbox('display', 'HN NavPoints Numbers', _settings.hnNumbers, hnNumbersLayerToggled);
+    WazeWrap.Events.register('zoomend', null, requestHNs);
+    WazeWrap.Events.register('moveend', null, requestHNs);
+    W.model.events.register('mergeend', null, requestHNs);
+    W.map.baseLayer.events.register('loadend', null, requestHNs);
+    W.model.actionManager.events.register('afterclearactions', null, requestHNs);
+    W.model.actionManager.events.register('afteraction', null, requestHNs);
+    W.model.actionManager.events.register('afterundoaction', null, requestHNs);
+    W.model.actionManager.events.register('afterundoaction', null, setMarkersEvents);
+    W.model.actionManager.events.register('noActions', null, requestHNs);
+    W.accelerators.events.register('reloadData', null, () => { setTimeout(requestHNs, 1000, 'test'); });
+    W.editingMediator.on('change:editingHouseNumbers', requestHNs);
+    W.editingMediator.on('change:editingHouseNumbers', setMarkersEvents);
+    W.editingMediator.on('change:editingHouseNumbers', observeHNLayer);
+    window.addEventListener('beforeunload', () => { checkShortcutsChanged(); }, false);
+    new WazeWrap.Interface.Shortcut(
+        'toggleHNNavPointsShortcut',
+        'Toggle HN NavPoints layer',
+        'layers',
+        'layersToggleHNNavPoints',
+        _settings.toggleHNNavPointsShortcut,
+        () => { $('#layer-switcher-item_hn_navpoints').click(); },
+        null
+    ).add();
+    new WazeWrap.Interface.Shortcut(
+        'toggleHNNavPointsNumbersShortcut',
+        'Toggle HN NavPoints Numbers layer',
+        'layers',
+        'layersToggleHNNavPointsNumbers',
+        _settings.toggleHNNavPointsNumbersShortcut,
+        () => { $('#layer-switcher-item_hn_navpoints_numbers').click(); },
+        null
+    ).add();
+    showScriptInfoAlert();
+    log(`Fully initialized in ${Math.round(performance.now() - LOAD_BEGIN_TIME)} ms.`);
+    requestHNs();
+    setTimeout(checkShortcutsChanged, 10000);
+}
+
+function bootstrap(tries) {
+    if (W && W.map && W.model && $ && WazeWrap.Ready) {
+        checkTimeout({ timeout: 'bootstrap' });
+        log('Bootstrapping.');
+        init();
+    }
+    else if (tries < 1000) {
+        logDebug(`Bootstrap failed. Retrying ${tries} of 1000`);
+        _timeouts.bootstrap = window.setTimeout(bootstrap, 200, ++tries);
+    }
+    else {
+        logError('Bootstrap timed out waiting for WME to become ready.');
+    }
+}
+
+bootstrap(1);
