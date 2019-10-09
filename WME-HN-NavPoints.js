@@ -3,7 +3,7 @@
 // @name            WME HN NavPoints (beta)
 // @namespace       https://greasyfork.org/users/166843
 // @description     Shows navigation points of all house numbers in WME
-// @version         2019.10.09.01
+// @version         2019.10.09.02
 // @author          dBsooner
 // @authorCZ        MajkiiTelini
 // @grant           none
@@ -52,7 +52,7 @@ let _settings = {},
 
 function log(message) { console.log('WME-HN-NavPoints:', message); }
 function logError(message) { console.error('WME-HN-NavPoints:', message); }
-// function logWarning(message) { console.warn('WME-HN-NavPoints:', message); }
+function logWarning(message) { console.warn('WME-HN-NavPoints:', message); }
 function logDebug(message) {
     if (DEBUG)
         console.log('WME-HN-NavPoints:', message);
@@ -306,14 +306,22 @@ function destroyAllHNs() {
     _processedSegments = [];
 }
 
-async function processSegs(action, arrSegObjs, processAll = false) {
+async function processSegs(action, arrSegObjs, processAll = false, retry = 0) {
     if ((action === 'settingChanged') && (W.map.getZoom() < _settings.disableBelowZoom)) {
         destroyAllHNs();
         return;
     }
     if (!arrSegObjs || (arrSegObjs.length === 0) || (W.map.getZoom() < _settings.disableBelowZoom))
         return;
-    const findObjIndex = (array, fldName, value) => array.map(a => a[fldName]).indexOf(value);
+    const findObjIndex = (array, fldName, value) => array.map(a => a[fldName]).indexOf(value),
+        processError = (err, chunk) => {
+            // if (err.status === 414) {
+            if (retry < 5)
+                processSegs(action, chunk, true, ++retry);
+            else
+                logWarning(`Get HNs for ${chunk.length} segments failed. Code: ${err.status} - Text: ${err.responseText}`);
+            // }
+        };
     if (action === 'objectsremoved') {
         if (arrSegObjs && (arrSegObjs.length > 0)) {
             const eg = W.map.getExtent().toGeometry();
@@ -329,6 +337,7 @@ async function processSegs(action, arrSegObjs, processAll = false) {
         }
     }
     else { // action = 'zoomend', 'moveend', 'objectsadded' , 'init', 'exithousenumbers', hnLayerToggled, hnNumbersLayerToggled
+        const descartesUrl = `${((document.URL.indexOf('https://beta.waze.com') > -1) ? 'https://beta.waze.com' : 'https://www.waze.com')}${W.Config.paths.houseNumbers}`;
         let i = arrSegObjs.length;
         while (i--) {
             const segIdx = findObjIndex(_processedSegments, 'segId', arrSegObjs[i].attributes.id);
@@ -343,20 +352,33 @@ async function processSegs(action, arrSegObjs, processAll = false) {
             }
         }
         while (arrSegObjs.length > 0) {
-            const chunk = arrSegObjs.splice(0, 250);
-            await $.ajax({
-                dataType: 'json',
-                url: `${((document.URL.indexOf('https://beta.waze.com') > -1) ? 'https://beta.waze.com' : 'https://www.waze.com')}${W.Config.paths.houseNumbers}`,
-                data: { ids: chunk.map(segObj => segObj.attributes.id).join(',') },
-                success(json) {
-                    if (json.error === undefined) {
-                        if (typeof json.segmentHouseNumbers.objects !== 'undefined') {
-                            for (let k = 0; k < json.segmentHouseNumbers.objects.length; k++)
-                                drawHNLine('JSON', json.segmentHouseNumbers.objects[k]);
-                        }
-                    }
-                }
-            });
+            let jsonData,
+                chunk;
+            if (retry === 1)
+                chunk = arrSegObjs.splice(0, 250);
+            else if (retry === 2)
+                chunk = arrSegObjs.splice(0, 125);
+            else if (retry === 3)
+                chunk = arrSegObjs.splice(0, 100);
+            else if (retry === 4)
+                chunk = arrSegObjs.splice(0, 50);
+            else
+                chunk = arrSegObjs.splice(0, 500);
+            try {
+                jsonData = await $.ajax({
+                    dataType: 'json',
+                    url: descartesUrl,
+                    data: { ids: chunk.map(segObj => segObj.attributes.id).join(',') }
+                }).fail(response => { processError(response, [...chunk]); });
+            }
+            catch (error) {
+                // if (error.status === 414)
+                processError(error, [...chunk]);
+            }
+            if (jsonData && (jsonData.error === undefined) && (typeof jsonData.segmentHouseNumbers.objects !== 'undefined')) { // success(json) {
+                for (let k = 0; k < jsonData.segmentHouseNumbers.objects.length; k++)
+                    drawHNLine('JSON', jsonData.segmentHouseNumbers.objects[k]);
+            }
         }
     }
 }
@@ -428,7 +450,7 @@ async function init() {
         }
         htmlOut += '<h4>WME HN NavPoints</h4>'
             + '<div style="font-size:12px; margin-left:22px;"'
-            + 'title="Disable NavPoints and house numbers when zoom level is less than specified number. Set to 0 to show at all zoom levels.\r\nDefault: 5">'
+            + 'title="Disable NavPoints and house numbers when zoom level is less than specified number. Minimum: 4.\r\nDefault: 5">'
             + `Disable when zoom level <<input type="text" id="HNNavPoints_disableBelowZoom" style="width:24px; height:20px; margin-left:4px;" value="${_settings.disableBelowZoom}"></input>`
             + '</div></div>';
         return htmlOut;
