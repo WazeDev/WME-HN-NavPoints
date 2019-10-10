@@ -3,7 +3,7 @@
 // @name            WME HN NavPoints (beta)
 // @namespace       https://greasyfork.org/users/166843
 // @description     Shows navigation points of all house numbers in WME
-// @version         2019.10.09.02
+// @version         2019.10.10.01
 // @author          dBsooner
 // @authorCZ        MajkiiTelini
 // @grant           none
@@ -13,7 +13,7 @@
 // @contributionURL https://github.com/WazeDev/Thank-The-Authors
 // ==/UserScript==
 
-/* global $, document, GM_info, localStorage, MutationObserver, OL, performance, W, WazeWrap, window */
+/* global _, $, document, GM_info, localStorage, MutationObserver, OL, performance, W, WazeWrap, window */
 
 /*
  * Original concept and code for WME HN NavPoints was written by MajkiiTelini. After version 0.6.6, this
@@ -39,12 +39,15 @@ const ALERT_UPDATE = true,
     SETTINGS_STORE_NAME = 'WMEHNNavPoints',
     _timeouts = {
         bootstrap: undefined,
-        observeRemovedLine: {},
+        observeDragging: {},
         saveSettingsToStorage: undefined,
         setMarkerEvents: undefined
     };
 
 let _settings = {},
+    _spinners = 0,
+    _epsg900913,
+    _epsg4326,
     _HNLayerObserver,
     _HNNavPointsLayer,
     _HNNavPointsNumbersLayer,
@@ -52,7 +55,7 @@ let _settings = {},
 
 function log(message) { console.log('WME-HN-NavPoints:', message); }
 function logError(message) { console.error('WME-HN-NavPoints:', message); }
-function logWarning(message) { console.warn('WME-HN-NavPoints:', message); }
+// function logWarning(message) { console.warn('WME-HN-NavPoints:', message); }
 function logDebug(message) {
     if (DEBUG)
         console.log('WME-HN-NavPoints:', message);
@@ -154,6 +157,38 @@ function checkTimeout(obj) {
     }
 }
 
+function doSpinner(stop = false) {
+    const $btn = $('#hnNPSpinner');
+    if (stop) {
+        _spinners--;
+        if (_spinners === 0) {
+            if ($btn.length > 0) {
+                $btn.removeClass('fa-spin');
+                $('#divHnNPSpinner').hide();
+            }
+            else {
+                $('#topbar-container .topbar').prepend(
+                    '<div id="divHnNPSpinner" title="WME HN NavPoints is currently processing house numbers." style="font-size:20px;background:white;float:left;margin-left:-20px;display:none;">'
+                    + '<i id="hnNPSpinner" class="fa fa-spinner"></i></div>'
+                );
+            }
+        }
+        return;
+    }
+    _spinners++;
+    if ($btn.length === 0) {
+        $('#topbar-container .topbar').prepend(
+            '<div id="divHnNPSpinner" title="WME HN NavPoints is currently processing house numbers." style="font-size:20px;background:white;float:left;margin-left:-20px;">'
+            + '<i id="hnNPSpinner" class="fa fa-spinner fa-spin"></i></div>'
+        );
+    }
+    else if (!$btn.hasClass('fa-spin')) {
+        $btn.addClass('fa-spin');
+        $('#divHnNPSpinner').show();
+    }
+}
+
+
 function hnLayerToggled(checked) {
     _HNNavPointsLayer.setVisibility(checked);
     _settings.hnLines = checked;
@@ -181,30 +216,39 @@ function observeHNLayer() {
     }
 }
 
-function observeRemovedLine(marker, toIndex) {
-    checkTimeout({ timeout: 'observeRemovedLine', toIndex });
+function observeDragging(marker, toIndex) {
+    checkTimeout({ timeout: 'observeDragging', toIndex });
     if (marker.dragging.active)
-        _timeouts.observeRemovedLine[toIndex] = window.setTimeout(observeRemovedLine, 50, marker, toIndex);
+        _timeouts.observeDragging[toIndex] = window.setTimeout(observeDragging, 50, marker, toIndex);
     else if (marker.model.attributes.number !== '' && W.map.getLayersByName('houseNumberMarkers')[0].markers.includes(marker))
-        drawHNLine('MODEL', W.model.segmentHouseNumbers.objects[marker.model.attributes.id].attributes);
+        drawHNLines('MODEL', [W.model.segmentHouseNumbers.objects[marker.model.attributes.id].attributes]);
 }
 
-function markerRemoveLine(evt) {
-    if (!evt)
-        return;
-    const permanent = (evt.type === 'delete'),
-        marker = evt.object,
-        HNtoRemove = `HNNavPoints|${W.model.segments.objects[marker.model.attributes.segID].attributes.primaryStreetID}|${marker.model.attributes.number}|${marker.model.attributes.id}`,
-        linesToRemove = _HNNavPointsLayer.getFeaturesByAttribute('featureId', HNtoRemove),
-        hnToRemove = _HNNavPointsNumbersLayer.getFeaturesByAttribute('featureId', HNtoRemove);
+function removeHNLines(featureId, marker, permanent) {
+    const linesToRemove = _HNNavPointsLayer.getFeaturesByAttribute('featureId', featureId),
+        hnToRemove = _HNNavPointsNumbersLayer.getFeaturesByAttribute('featureId', featureId);
     if (linesToRemove.length > 0) {
         _HNNavPointsLayer.removeFeatures(linesToRemove);
         _HNNavPointsNumbersLayer.removeFeatures(hnToRemove);
         if (!permanent)
-            observeRemovedLine(marker, getRandomId());
+            observeDragging(marker, getRandomId());
     }
     if (W.map.getLayersByName('houseNumberMarkers')[0].markers[0].events.listeners.delete.length < 2)
         setMarkersEvents();
+}
+
+function createFeatureId(type, data) {
+    if (type === 'creation')
+        return `HNNavPoints|${W.model.segments.objects[data.segID].attributes.primaryStreetID}|${data.number}|${data.id}`;
+    if (type === 'marker')
+        return `HNNavPoints|${W.model.segments.objects[data.model.attributes.segID].attributes.primaryStreetID}|${data.model.attributes.number}|${data.model.attributes.id}`;
+    if (type === 'action') {
+        if (data.action.object)
+            return `HNNavPoints|${W.model.segments.objects[data.action.object.attributes.segID].attributes.primaryStreetID}|${data.action.object.attributes.number}|${data.action.object.attributes.id}`;
+        if (data.action.houseNumber)
+            return `HNNavPoints|${W.model.segments.objects[data.action.houseNumber.attributes.segID].attributes.primaryStreetID}|${data.action.houseNumber.attributes.number}|${data.action.houseNumber.attributes.id}`;
+    }
+    return false;
 }
 
 function processEvent(evt) {
@@ -219,16 +263,50 @@ function processEvent(evt) {
         processSegs(evt.type, W.model.segments.getObjectArray().filter(seg => seg.attributes.hasHNs));
     }
     else if (evt.type === 'afterclearactions') {
-        processSegs('exithousenumbers', W.model.segments.getObjectArray().filter(seg => seg.attributes.hasHNs), false);
+        processSegs('exithousenumbers', W.model.segments.getObjectArray().filter(seg => seg.attributes.hasHNs), (W.editingMediator.attributes.editingHouseNumbers));
     }
     else if (evt.type === 'noActions') {
         processSegs('exithousenumbers', W.model.segments.getObjectArray().filter(seg => seg.attributes.hasHNs), false);
     }
-    else if (evt.type === 'afterundoaction' || evt.type === 'afteraction') {
-        if (!evt.action || !evt.action.houseNumber)
-            return;
-        drawHNLine('MODEL', (evt.action.newHouseNumber ? evt.action.newHouseNumber.attributes : evt.action.houseNumber.attributes));
-        setMarkersEvents();
+    else if (evt.action && ((evt.type === 'afterundoaction') || (evt.type === 'afteraction'))) {
+        if (evt.action._description && (evt.action._description.indexOf('Deleted house number') > -1)) {
+            if (evt.type === 'afterundoaction')
+                drawHNLines('MODEL', [evt.action.object.attributes]);
+            else
+                removeHNLines(createFeatureId('action', evt), null, true);
+                // markerRemoveLine(evt);
+            setMarkersEvents();
+        }
+        else if (evt.action._description && (evt.action._description.indexOf('Updated house number') > -1)) {
+            const tempEvt = _.cloneDeep(evt);
+            if (evt.type === 'afterundoaction') {
+                if (tempEvt.action.newAttributes && tempEvt.action.newAttributes.number)
+                    tempEvt.action.attributes.number = tempEvt.action.newAttributes.number;
+            }
+            else if (evt.type === 'afteraction') {
+                if (tempEvt.action.oldAttributes && tempEvt.action.oldAttributes.number)
+                    tempEvt.action.attributes.number = tempEvt.action.oldAttributes.number;
+            }
+            removeHNLines(createFeatureId('action', tempEvt), null, true); // markerRemoveLine(tempEvt);
+            drawHNLines('MODEL', [evt.action.attributes]);
+            setMarkersEvents();
+        }
+        else if (evt.action._description && (evt.action._description.indexOf('Added house number') > -1)) {
+            if (evt.type === 'afterundoaction')
+                removeHNLines(createFeatureId('action', evt), null, true); // markerRemoveLine(evt);
+            else
+                drawHNLines('MODEL', [evt.action.houseNumber.attributes]);
+        }
+        else if (evt.action && evt.action.houseNumber) {
+            drawHNLines('MODEL', (evt.action.newHouseNumber ? [evt.action.newHouseNumber.attributes] : [evt.action.houseNumber.attributes]));
+            setMarkersEvents();
+        }
+    }
+    else if ((evt.type === 'click:input') || (evt.type === 'delete')) {
+        const permanent = (evt.type === 'delete'),
+            marker = evt.object,
+            HNtoRemove = createFeatureId('marker', marker);
+        removeHNLines(HNtoRemove, marker, permanent);
     }
 }
 
@@ -240,87 +318,102 @@ function setMarkersEvents() {
             return;
         }
         W.map.getLayersByName('houseNumberMarkers')[0].markers.forEach(marker => {
-            marker.events.unregister('click:input', null, markerRemoveLine);
-            marker.events.unregister('delete', null, markerRemoveLine);
-            marker.events.register('click:input', null, markerRemoveLine);
-            marker.events.register('delete', null, markerRemoveLine);
+            marker.events.unregister('click:input', null, processEvent);
+            marker.events.unregister('delete', null, processEvent);
+            marker.events.register('click:input', null, processEvent);
+            marker.events.register('delete', null, processEvent);
         });
     }
     else if (W.map.getLayersByName('houseNumberMarkers').length > 0) {
         W.map.getLayersByName('houseNumberMarkers')[0].markers.forEach(marker => {
-            marker.events.unregister('click:input', null, markerRemoveLine);
-            marker.events.unregister('delete', null, markerRemoveLine);
+            marker.events.unregister('click:input', null, processEvent);
+            marker.events.unregister('delete', null, processEvent);
         });
         processSegs('exithousenumbers', W.model.segments.getObjectArray().filter(seg => seg.attributes.hasHNs), true);
     }
 }
 
-function drawHNLine(type, houseNumber) {
-    const seg = W.model.segments.objects[houseNumber.segID];
-    if (seg) {
-        const streetId = seg.attributes.primaryStreetID,
-            featureId = `HNNavPoints|${streetId}|${houseNumber.number}|${houseNumber.id}`;
-        _HNNavPointsLayer.removeFeatures(_HNNavPointsLayer.getFeaturesByAttribute('featureId', featureId));
-        _HNNavPointsNumbersLayer.removeFeatures(_HNNavPointsNumbersLayer.getFeaturesByAttribute('featureId', featureId));
-        const epsg900913 = new OL.Projection('EPSG:900913'),
-            epsg4326 = new OL.Projection('EPSG:4326'),
-            p1 = (type === 'JSON')
-                ? new OL.Geometry.Point(houseNumber.fractionPoint.coordinates[0], houseNumber.fractionPoint.coordinates[1]).transform(epsg4326, epsg900913)
-                : new OL.Geometry.Point(houseNumber.fractionPoint.x, houseNumber.fractionPoint.y),
-            p2 = (type === 'JSON')
-                ? new OL.Geometry.Point(houseNumber.geometry.coordinates[0], houseNumber.geometry.coordinates[1]).transform(epsg4326, epsg900913)
-                : new OL.Geometry.Point(houseNumber.geometry.x, houseNumber.geometry.y),
-            // eslint-disable-next-line no-nested-ternary
-            strokeColor = (houseNumber.forced
-                ? (!houseNumber.hasOwnProperty('updatedBy')) ? 'red' : 'orange'
-                : (!houseNumber.hasOwnProperty('updatedBy')) ? 'yellow' : 'white'
-            );
-        let lineString = new OL.Geometry.LineString([p1, p2]),
+function drawHNLines(type, houseNumberArr) {
+    if (houseNumberArr.length === 0)
+        return;
+    const lineFeatures = [],
+        numberFeatures = [];
+    for (let i = 0; i < houseNumberArr.length; i++) {
+        const houseNumber = houseNumberArr[i],
+            seg = W.model.segments.objects[houseNumber.segID];
+        if (seg) {
+            const streetId = seg.attributes.primaryStreetID,
+                featureId = createFeatureId('creation', houseNumber);
+            _HNNavPointsLayer.removeFeatures(_HNNavPointsLayer.getFeaturesByAttribute('featureId', featureId));
+            _HNNavPointsNumbersLayer.removeFeatures(_HNNavPointsNumbersLayer.getFeaturesByAttribute('featureId', featureId));
+            const p1 = (type === 'JSON')
+                    ? new OL.Geometry.Point(houseNumber.fractionPoint.coordinates[0], houseNumber.fractionPoint.coordinates[1]).transform(_epsg4326, _epsg900913)
+                    : new OL.Geometry.Point(houseNumber.fractionPoint.x, houseNumber.fractionPoint.y),
+                p2 = (type === 'JSON')
+                    ? new OL.Geometry.Point(houseNumber.geometry.coordinates[0], houseNumber.geometry.coordinates[1]).transform(_epsg4326, _epsg900913)
+                    : new OL.Geometry.Point(houseNumber.geometry.x, houseNumber.geometry.y),
+                // eslint-disable-next-line no-nested-ternary
+                strokeColor = (houseNumber.forced
+                    ? (!houseNumber.hasOwnProperty('updatedBy')) ? 'red' : 'orange'
+                    : (!houseNumber.hasOwnProperty('updatedBy')) ? 'yellow' : 'white'
+                );
+            let lineString = new OL.Geometry.LineString([p1, p2]),
+                lineFeature = new OL.Feature.Vector(
+                    lineString,
+                    { streetId, segmentId: houseNumber.segID, featureId },
+                    {
+                        strokeWidth: 4, strokeColor: 'black', strokeOpacity: 0.5, strokeDashstyle: 'dash', strokeDashArray: '8, 8'
+                    }
+                );
+            lineFeatures.push(lineFeature);
+            lineString = new OL.Geometry.LineString([p1, p2]);
             lineFeature = new OL.Feature.Vector(
                 lineString,
                 { streetId, segmentId: houseNumber.segID, featureId },
                 {
-                    strokeWidth: 4, strokeColor: 'black', strokeOpacity: 0.5, strokeDashstyle: 'dash', strokeDashArray: '8, 8'
+                    strokeWidth: 2, strokeColor, strokeOpacity: 1, strokeDashstyle: 'dash', strokeDashArray: '8, 8'
                 }
             );
-        _HNNavPointsLayer.addFeatures(lineFeature);
-        lineString = new OL.Geometry.LineString([p1, p2]);
-        lineFeature = new OL.Feature.Vector(
-            lineString,
-            { streetId, segmentId: houseNumber.segID, featureId },
-            {
-                strokeWidth: 2, strokeColor, strokeOpacity: 1, strokeDashstyle: 'dash', strokeDashArray: '8, 8'
-            }
-        );
-        _HNNavPointsLayer.addFeatures(lineFeature);
-        // eslint-disable-next-line new-cap
-        _HNNavPointsNumbersLayer.addFeatures(new OL.Feature.Vector(new OL.Geometry.Polygon.createRegularPolygon(p2, 1, 20), {
-            streetId, segmentId: houseNumber.segID, featureId, hn_number: houseNumber.number, strokeWidth: 3, Color: strokeColor
-        }));
+            lineFeatures.push(lineFeature);
+            // eslint-disable-next-line new-cap
+            numberFeatures.push(new OL.Feature.Vector(new OL.Geometry.Polygon.createRegularPolygon(p2, 1, 20), {
+                streetId, segmentId: houseNumber.segID, featureId, hn_number: houseNumber.number, strokeWidth: 3, Color: strokeColor
+            }));
+        }
     }
+    if (lineFeatures.length > 0)
+        _HNNavPointsLayer.addFeatures(lineFeatures);
+    if (numberFeatures.length > 0)
+        _HNNavPointsNumbersLayer.addFeatures(numberFeatures);
 }
 
 function destroyAllHNs() {
-    _HNNavPointsLayer.destroyFeatures();
-    _HNNavPointsNumbersLayer.destroyFeatures();
-    _processedSegments = [];
+    return new Promise(resolve => {
+        _HNNavPointsLayer.destroyFeatures();
+        _HNNavPointsNumbersLayer.destroyFeatures();
+        _processedSegments = [];
+        resolve();
+    });
 }
 
 async function processSegs(action, arrSegObjs, processAll = false, retry = 0) {
     if ((action === 'settingChanged') && (W.map.getZoom() < _settings.disableBelowZoom)) {
-        destroyAllHNs();
+        doSpinner(false);
+        await destroyAllHNs();
+        doSpinner(true);
         return;
     }
     if (!arrSegObjs || (arrSegObjs.length === 0) || (W.map.getZoom() < _settings.disableBelowZoom))
         return;
+    log('Started processing.');
+    doSpinner(false);
     const findObjIndex = (array, fldName, value) => array.map(a => a[fldName]).indexOf(value),
         processError = (err, chunk) => {
-            // if (err.status === 414) {
+            logDebug(`Retry: ${retry}`);
             if (retry < 5)
                 processSegs(action, chunk, true, ++retry);
             else
-                logWarning(`Get HNs for ${chunk.length} segments failed. Code: ${err.status} - Text: ${err.responseText}`);
-            // }
+                logError(`Get HNs for ${chunk.length} segments failed. Code: ${err.status} - Text: ${err.responseText}`);
         };
     if (action === 'objectsremoved') {
         if (arrSegObjs && (arrSegObjs.length > 0)) {
@@ -336,7 +429,7 @@ async function processSegs(action, arrSegObjs, processAll = false, retry = 0) {
             });
         }
     }
-    else { // action = 'zoomend', 'moveend', 'objectsadded' , 'init', 'exithousenumbers', hnLayerToggled, hnNumbersLayerToggled
+    else { // action = 'zoomend', 'moveend', 'objectsadded' , 'init', 'exithousenumbers', 'hnLayerToggled', 'hnNumbersLayerToggled', 'settingChanged'
         const descartesUrl = `${((document.URL.indexOf('https://beta.waze.com') > -1) ? 'https://beta.waze.com' : 'https://www.waze.com')}${W.Config.paths.houseNumbers}`;
         let i = arrSegObjs.length;
         while (i--) {
@@ -372,20 +465,20 @@ async function processSegs(action, arrSegObjs, processAll = false, retry = 0) {
                 }).fail(response => { processError(response, [...chunk]); });
             }
             catch (error) {
-                // if (error.status === 414)
                 processError(error, [...chunk]);
             }
-            if (jsonData && (jsonData.error === undefined) && (typeof jsonData.segmentHouseNumbers.objects !== 'undefined')) { // success(json) {
-                for (let k = 0; k < jsonData.segmentHouseNumbers.objects.length; k++)
-                    drawHNLine('JSON', jsonData.segmentHouseNumbers.objects[k]);
-            }
+            if (jsonData && (jsonData.error === undefined) && (typeof jsonData.segmentHouseNumbers.objects !== 'undefined'))
+                drawHNLines('JSON', jsonData.segmentHouseNumbers.objects);
         }
     }
+    doSpinner(true);
 }
 
 async function init() {
     log('Initializing.');
     await loadSettingsFromStorage();
+    _epsg900913 = new OL.Projection('EPSG:900913');
+    _epsg4326 = new OL.Projection('EPSG:4326');
     _HNNavPointsLayer = new OL.Layer.Vector('HN NavPoints Layer', {
         displayInLayerSwitcher: true,
         uniqueName: '__HNNavPointsLayer'
@@ -462,7 +555,10 @@ async function init() {
                 this.value = newVal;
             _settings.disableBelowZoom = newVal;
             saveSettingsToStorage();
-            processSegs();
+            if (W.map.getZoom() < newVal)
+                processSegs('settingChanged', null, true, 0);
+            else
+                processSegs('segginChanged', W.model.segments.getObjectArray().filter(seg => seg.attributes.hasHNs), true, 0);
         }
     });
     _HNLayerObserver = new MutationObserver(mutationsList => {
