@@ -33,6 +33,7 @@ const ALERT_UPDATE = true,
         '<b>NEW:</b> Updated to utilize WazeWrap features.',
         '<b>NEW:</b> Settings saved to WazeWrap for easy access from other browsers.',
         '<b>NEW:</b> Disable when zoom level < # setting created. Set in WME Settings. (Minimum: 4)',
+        '<b>NEW:</b> Spinner in top left corner of WME when HN NavPoints are loading.',
         '<b>CHANGE:</b> Lots of under the hood stuff to enhance experience.',
         '<b>BUGFIX:</b> Keyboard shortcuts to toggle layers now remembered.'
     ],
