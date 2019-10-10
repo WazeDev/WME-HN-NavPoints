@@ -406,7 +406,6 @@ async function processSegs(action, arrSegObjs, processAll = false, retry = 0) {
     }
     if (!arrSegObjs || (arrSegObjs.length === 0) || (W.map.getZoom() < _settings.disableBelowZoom))
         return;
-    log('Started processing.');
     doSpinner(false);
     const findObjIndex = (array, fldName, value) => array.map(a => a[fldName]).indexOf(value),
         processError = (err, chunk) => {
