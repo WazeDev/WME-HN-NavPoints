@@ -1,6 +1,6 @@
 /* eslint-disable no-template-curly-in-string */
 // ==UserScript==
-// @name            WME HN NavPoints (beta)
+// @name            WME HN NavPoints
 // @namespace       https://greasyfork.org/users/166843
 // @description     Shows navigation points of all house numbers in WME
 // @version         2019.10.11.01
@@ -23,7 +23,7 @@
  */
 
 const ALERT_UPDATE = true,
-    DEBUG = true,
+    DEBUG = false,
     LOAD_BEGIN_TIME = performance.now(),
     SCRIPT_FORUM_URL = 'https://www.waze.com/forum/viewtopic.php?f=819&t=289116',
     SCRIPT_GF_URL = 'https://greasyfork.org/en/scripts/390565-wme-hn-navpoints',
