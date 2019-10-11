@@ -3,7 +3,7 @@
 // @name            WME HN NavPoints (beta)
 // @namespace       https://greasyfork.org/users/166843
 // @description     Shows navigation points of all house numbers in WME
-// @version         2019.10.10.01
+// @version         2019.10.11.01
 // @author          dBsooner
 // @authorCZ        MajkiiTelini
 // @grant           none
@@ -303,11 +303,12 @@ function processEvent(evt) {
             setMarkersEvents();
         }
     }
-    else if ((evt.type === 'click:input') || (evt.type === 'delete')) {
-        const permanent = (evt.type === 'delete'),
-            marker = evt.object,
-            HNtoRemove = createFeatureId('marker', marker);
-        removeHNLines(HNtoRemove, marker, permanent);
+    else if (evt.type === 'click:input') {
+        if (evt.object && evt.object.dragging && !evt.object.dragging.last)
+            removeHNLines(createFeatureId('marker', evt.object), evt.object, false);
+    }
+    else if (evt.type === 'delete') {
+        removeHNLines(createFeatureId('marker', evt.object), evt.object, true);
     }
 }
 
@@ -531,20 +532,26 @@ async function init() {
         null
     ).add();
     $('#sidepanel-prefs').append(() => {
-        let htmlOut = '';
+        let htmlOut = '<div style="border-bottom:1px solid black; padding-bottom:10px;';
         if ($('#sidepanel-prefs')[0].lastChild.tagName.search(/HR/gi) > -1) {
             const elmnt = $('#sidepanel-prefs')[0].lastChild;
             elmnt.style.borderTopColor = 'black';
             elmnt.style.color = 'black';
-            htmlOut += '<div>';
         }
         else {
-            htmlOut += '<div style="border-top:1px solid black;">';
+            htmlOut += 'border-top:1px solid black;';
         }
-        htmlOut += '<h4>WME HN NavPoints</h4>'
-            + '<div style="font-size:12px; margin-left:22px;"'
-            + 'title="Disable NavPoints and house numbers when zoom level is less than specified number. Minimum: 4.\r\nDefault: 5">'
+        htmlOut += '"><h4>WME HN NavPoints</h4>'
+            + '<div style="font-size:12px; margin-left:6px;" title="Disable NavPoints and house numbers when zoom level is less than specified number.\r\nMinimum: 4\r\nDefault: 5">'
             + `Disable when zoom level <<input type="text" id="HNNavPoints_disableBelowZoom" style="width:24px; height:20px; margin-left:4px;" value="${_settings.disableBelowZoom}"></input>`
+            + '</div>'
+            + '<div style="margin:0 10px 0 10px; width:130px; text-align:center; font-size:12px; background:black; font-weight:600;">'
+            + ' <div style="text-shadow:0 0 3px white,0 0 3px white,0 0 3px white,0 0 3px white,0 0 3px white,0 0 3px white,0 0 3px white,0 0 3px white,0 0 3px white,0 0 3px white;">Touched</div>'
+            + ' <div style="text-shadow:0 0 3px orange,0 0 3px orange,0 0 3px orange,0 0 3px orange,0 0 3px orange,0 0 3px orange,0 0 3px orange,0 0 3px orange,0 0 3px orange,0 0 3px orange;'
+            + '     ">Touched forced</div>'
+            + ' <div style="text-shadow:0 0 3px yellow,0 0 3px yellow,0 0 3px yellow, 0 0 3px yellow,0 0 3px yellow,0 0 3px yellow,0 0 3px yellow,0 0 3px yellow,0 0 3px yellow,0 0 3px yellow;'
+            + '     ">Untouched</div>'
+            + ' <div style="text-shadow:0 0 3px red,0 0 3px red,0 0 3px red,0 0 3px red,0 0 3px red,0 0 3px red,0 0 3px red,0 0 3px red,0 0 3px red,0 0 3px red;">Untouched forced</div>'
             + '</div></div>';
         return htmlOut;
     });
