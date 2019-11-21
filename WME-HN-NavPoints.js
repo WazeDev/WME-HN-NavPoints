@@ -640,7 +640,7 @@ async function init() {
 }
 
 function bootstrap(tries) {
-    if (W && W.map && W.model && $ && WazeWrap.Ready && require) {
+    if (W && W.map && W.model && $ && WazeWrap.Ready) {
         checkTimeout({ timeout: 'bootstrap' });
         log('Bootstrapping.');
         init();
