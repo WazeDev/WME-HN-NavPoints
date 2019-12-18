@@ -3,7 +3,7 @@
 // @name            WME HN NavPoints (beta)
 // @namespace       https://greasyfork.org/users/166843
 // @description     Shows navigation points of all house numbers in WME
-// @version         2019.12.12.01
+// @version         2019.12.18.01
 // @author          dBsooner
 // @grant           none
 // @require         https://greasyfork.org/scripts/24851-wazewrap/code/WazeWrap.js
@@ -12,7 +12,7 @@
 // @contributionURL https://github.com/WazeDev/Thank-The-Authors
 // ==/UserScript==
 
-/* global _, $, GM_info, localStorage, MutationObserver, OL, performance, W, WazeWrap, window */
+/* global _, $, document, GM_info, localStorage, MutationObserver, OL, performance, W, WazeWrap, window */
 
 /*
  * Original concept and code for WME HN NavPoints was written by MajkiiTelini. After version 0.6.6, this
@@ -28,10 +28,13 @@ const ALERT_UPDATE = true,
     SCRIPT_GF_URL = 'https://greasyfork.org/en/scripts/390565-wme-hn-navpoints',
     SCRIPT_NAME = GM_info.script.name.replace('(beta)', 'β'),
     SCRIPT_VERSION = GM_info.script.version,
-    SCRIPT_VERSION_CHANGES = ['<b>CHANGE:</b> Lots of under-the-hood stuff to increase performance.'],
+    SCRIPT_VERSION_CHANGES = ['<b>NEW:</b> HN number mouseover tooltip (zooms 6-10). Edit button for easy HN mode access.',
+        '<b>CHANGE:</b> Lots of under-the-hood stuff to increase performance.'],
     SETTINGS_STORE_NAME = 'WMEHNNavPoints',
     _timeouts = {
         bootstrap: undefined,
+        checkZIndex: undefined,
+        hideTooltip: undefined,
         saveSettingsToStorage: undefined,
         setMarkerEvents: undefined
     };
@@ -42,7 +45,13 @@ let _settings = {},
     _HNLayerObserver,
     _HNNavPointsLayer,
     _HNNavPointsNumbersLayer,
-    _processedSegments = [];
+    _processedSegments = [],
+    _$hnNavPointsTooltipDiv,
+    _popup = {
+        inUse: false,
+        hnNumber: -1,
+        streetId: -1
+    };
 
 function log(message) { console.log('WME-HN-NavPoints:', message); }
 function logError(message) { console.error('WME-HN-NavPoints:', message); }
@@ -217,12 +226,14 @@ function removeHNLines(hnObj) {
     if (!hnObj)
         return;
     const streetId = W.model.segments.getObjectById(hnObj.getSegmentId()).attributes.primaryStreetID,
-        featureId = `HNNavPoints|${streetId}|${hnObj.getNumber()}|${hnObj.getID()}`,
+        featureId = `HNNavPoints|${streetId}|${hnObj.getNumber()}|${hnObj.getSegmentId()}|${hnObj.getID()}`,
         linesToRemove = _HNNavPointsLayer.getFeaturesByAttribute('featureId', featureId),
-        hnToRemove = _HNNavPointsNumbersLayer.getFeaturesByAttribute('featureId', featureId);
+        markerIdx = _HNNavPointsNumbersLayer.markers.map(marker => marker.featureId).indexOf(featureId),
+        hnToRemove = (markerIdx > -1) ? _HNNavPointsNumbersLayer.markers[markerIdx] : null;
     if (linesToRemove.length > 0) {
         _HNNavPointsLayer.removeFeatures(linesToRemove);
-        _HNNavPointsNumbersLayer.removeFeatures(hnToRemove);
+        if (hnToRemove)
+            _HNNavPointsNumbersLayer.removeMarker(hnToRemove);
     }
     setMarkersEvents();
 }
@@ -242,6 +253,12 @@ function processEvent(evt) {
     }
     if (evt.type === 'reloadData') {
         destroyAllHNs();
+    }
+    else if (evt.type === 'zoomend') {
+        if ((W.map.getOLMap().getZoom() < _settings.disableBelowZoom) && (_processedSegments.length > 0))
+            destroyAllHNs();
+        if ((W.map.getOLMap().getZoom() > (_settings.disableBelowZoom - 1)) && (_processedSegments.length === 0))
+            processSegs('zoomend', W.model.segments.getByAttributes({ hasHNs: true }), true);
     }
     else if (evt.action && ((evt.type === 'afterundoaction') || (evt.type === 'afteraction'))) {
         if (evt.action._description && (evt.action._description.indexOf('Deleted house number') > -1)) {
@@ -291,6 +308,7 @@ function processEvent(evt) {
 function setMarkersEvents() {
     if (W.editingMediator.attributes.editingHouseNumbers) {
         checkTimeout({ timeout: 'setMarkerEvents' });
+        hideTooltip();
         if (W.map.getOLMap().getLayersByName('houseNumberMarkers')[0].markers.length === 0) {
             _timeouts.setMarkerEvents = window.setTimeout(setMarkersEvents, 50);
             return;
@@ -308,6 +326,8 @@ function setMarkersEvents() {
             marker.events.unregister('delete', null, processEvent);
         });
         processSegs('exithousenumbers', W.model.segments.getByAttributes({ hasHNs: true }), true);
+        _HNNavPointsLayer.setZIndex(1000);
+        _HNNavPointsNumbersLayer.setZIndex(1000);
     }
 }
 
@@ -315,15 +335,26 @@ function drawHNLines(houseNumberArr) {
     if (houseNumberArr.length === 0)
         return;
     const lineFeatures = [],
-        numberFeatures = [];
+        svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'),
+        svgText = document.createElementNS('http://www.w3.org/2000/svg', 'text'),
+        invokeTooltip = evt => { showTooltip(evt); };
+    svg.setAttribute('xlink', 'http://www.w3.org/1999/xlink');
+    svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+    svg.setAttribute('viewBox', '0 0 40 10');
+    svgText.setAttribute('text-anchor', 'middle');
+    svgText.setAttribute('x', '50%');
+    svgText.setAttribute('y', '70%');
     for (let i = 0; i < houseNumberArr.length; i++) {
         const hnObj = houseNumberArr[i],
             seg = W.model.segments.objects[hnObj.getSegmentId()];
         if (seg) {
             const streetId = seg.attributes.primaryStreetID,
-                featureId = `HNNavPoints|${streetId}|${hnObj.getNumber()}|${hnObj.getID()}`;
+                featureId = `HNNavPoints|${streetId}|${hnObj.getNumber()}|${hnObj.getSegmentId()}|${hnObj.getID()}`,
+                markerIdx = _HNNavPointsNumbersLayer.markers.map(marker => marker.featureId).indexOf(featureId),
+                hnToRemove = (markerIdx > -1) ? _HNNavPointsNumbersLayer.markers[markerIdx] : null;
+            if (hnToRemove)
+                _HNNavPointsNumbersLayer.removeMarker(hnToRemove);
             _HNNavPointsLayer.removeFeatures(_HNNavPointsLayer.getFeaturesByAttribute('featureId', featureId));
-            _HNNavPointsNumbersLayer.removeFeatures(_HNNavPointsNumbersLayer.getFeaturesByAttribute('featureId', featureId));
             const p1 = new OL.Geometry.Point(hnObj.getFractionPoint().x, hnObj.getFractionPoint().y),
                 p2 = new OL.Geometry.Point(hnObj.getGeometry().x, hnObj.getGeometry().y),
                 // eslint-disable-next-line no-nested-ternary
@@ -349,22 +380,26 @@ function drawHNLines(houseNumberArr) {
                 }
             );
             lineFeatures.push(lineFeature);
-            // eslint-disable-next-line new-cap
-            numberFeatures.push(new OL.Feature.Vector(new OL.Geometry.Polygon.createRegularPolygon(p2, 1, 20), {
-                streetId, segmentId: hnObj.getSegmentId(), featureId, hn_number: hnObj.getNumber(), strokeWidth: 3, Color: strokeColor
-            }));
+            svg.setAttribute('style', `text-shadow:0 0 3px ${strokeColor},0 0 3px ${strokeColor},0 0 3px ${strokeColor},0 0 3px ${strokeColor},0 0 3px ${strokeColor},0 0 3px ${strokeColor},0 0 3px ${strokeColor},0 0 3px ${strokeColor},0 0 3px ${strokeColor},0 0 3px ${strokeColor};font-size:12px;font-weight:bold;font-family:Arial Black, monospace;`);
+            svgText.textContent = hnObj.getNumber();
+            svg.innerHTML = svgText.outerHTML;
+            const svgIcon = new OL.Icon(`data:image/svg+xml,${svg.outerHTML}`, { w: 40, h: 15 }),
+                markerFeature = new OL.Marker(new OL.LonLat(p2.x, p2.y), svgIcon);
+            markerFeature.events.register('mouseover', null, invokeTooltip);
+            markerFeature.events.register('mouseout', null, hideTooltipDelay);
+            markerFeature.featureId = featureId;
+            markerFeature.segmentId = hnObj.getSegmentId();
+            _HNNavPointsNumbersLayer.addMarker(markerFeature);
         }
     }
     if (lineFeatures.length > 0)
         _HNNavPointsLayer.addFeatures(lineFeatures);
-    if (numberFeatures.length > 0)
-        _HNNavPointsNumbersLayer.addFeatures(numberFeatures);
 }
 
 function destroyAllHNs() {
     return new Promise(resolve => {
         _HNNavPointsLayer.destroyFeatures();
-        _HNNavPointsNumbersLayer.destroyFeatures();
+        _HNNavPointsNumbersLayer.clearMarkers();
         _processedSegments = [];
         resolve();
     });
@@ -385,7 +420,8 @@ async function processSegs(action, arrSegObjs, processAll = false, retry = 0) {
     if (!arrSegObjs || (arrSegObjs.length === 0) || (W.map.getOLMap().getZoom() < _settings.disableBelowZoom))
         return;
     doSpinner(false);
-    const findObjIndex = (array, fldName, value) => array.map(a => a[fldName]).indexOf(value),
+    const eg = W.map.getOLMap().getExtent().toGeometry(),
+        findObjIndex = (array, fldName, value) => array.map(a => a[fldName]).indexOf(value),
         processError = (err, chunk) => {
             logDebug(`Retry: ${retry}`);
             if (retry < 5)
@@ -395,11 +431,13 @@ async function processSegs(action, arrSegObjs, processAll = false, retry = 0) {
         };
     if (action === 'objectsremoved') {
         if (arrSegObjs && (arrSegObjs.length > 0)) {
-            const eg = W.map.getOLMap().getExtent().toGeometry();
             arrSegObjs.forEach(segObj => {
                 if (!eg.intersects(segObj.geometry)) {
                     _HNNavPointsLayer.removeFeatures(_HNNavPointsLayer.getFeaturesByAttribute('segmentId', segObj.getID()));
-                    _HNNavPointsNumbersLayer.removeFeatures(_HNNavPointsNumbersLayer.getFeaturesByAttribute('segmentId', segObj.getID()));
+                    _HNNavPointsNumbersLayer.markers.forEach(marker => {
+                        if (marker.segmentId === segObj.getID())
+                            _HNNavPointsNumbersLayer.removeMarker(marker);
+                    });
                     const segIdx = findObjIndex(_processedSegments, 'segId', segObj.getID());
                     if (segIdx > -1)
                         _processedSegments.splice(segIdx, 1);
@@ -407,7 +445,7 @@ async function processSegs(action, arrSegObjs, processAll = false, retry = 0) {
             });
         }
     }
-    else { // action = 'objectsadded', 'init', 'exithousenumbers', 'hnLayerToggled', 'hnNumbersLayerToggled', 'settingChanged'
+    else { // action = 'objectsadded', 'zoomend', 'init', 'exithousenumbers', 'hnLayerToggled', 'hnNumbersLayerToggled', 'settingChanged'
         let i = arrSegObjs.length,
             hnObjs = [];
         while (i--) {
@@ -469,8 +507,13 @@ function initBackgroundTasks(status) {
             W.model.segments.on('objectsremoved', segmentsEvent);
             W.editingMediator.on('change:editingHouseNumbers', setMarkersEvents);
             W.editingMediator.on('change:editingHouseNumbers', observeHNLayer);
+            WazeWrap.Events.register('zoomend', null, processEvent);
             WazeWrap.Events.register('afterundoaction', this, processEvent);
             WazeWrap.Events.register('afteraction', this, processEvent);
+            _timeouts.checkZIndex = window.setInterval(() => {
+                if (`${_HNNavPointsNumbersLayer.div.style.zIndex}` !== '1000')
+                    _HNNavPointsNumbersLayer.setZIndex(1000);
+            }, 1000);
             _scriptActive = true;
         }
         else if (status === 'disable') {
@@ -480,13 +523,108 @@ function initBackgroundTasks(status) {
             W.model.segments.off('objectsremoved', segmentsEvent);
             W.editingMediator.off('change:editingHouseNumbers', setMarkersEvents);
             W.editingMediator.off('change:editingHouseNumbers', observeHNLayer);
+            WazeWrap.Events.unregister('zoomend', null, processEvent);
             WazeWrap.Events.unregister('afterundoaction', this, processEvent);
             WazeWrap.Events.unregister('afteraction', this, processEvent);
-            WazeWrap.Events.unregister('afterclearactions', this, processEvent);
+            window.clearInterval(_timeouts.checkZIndex);
+            _timeouts.checkZIndex = undefined;
             _scriptActive = false;
         }
         resolve();
     });
+}
+
+function enterHNEditMode(evt) {
+    if (evt && evt.data && evt.data.segment) {
+        if (evt.data.moveMap)
+            W.map.setCenter(new OL.LonLat(evt.data.segment.getCenter().x, evt.data.segment.getCenter().y), W.map.getOLMap().getZoom());
+        W.selectionManager.setSelectedModels(evt.data.segment);
+        $('#segment-edit-general .edit-house-numbers').click();
+    }
+}
+
+function showTooltip(evt) {
+    if (W.map.getOLMap().getZoom() < 6)
+        return;
+    if (evt && evt.object && evt.object.featureId) {
+        checkTooltip();
+        const featureArr = evt.object.featureId.split('|'),
+            streetId = featureArr[1],
+            hnNumber = featureArr[2],
+            segmentId = featureArr[3];
+        if (_popup.inUse && (_popup.hnNumber === hnNumber) && (_popup.streetId === streetId))
+            return;
+        const street = W.model.streets.getObjectById(streetId),
+            segment = W.model.segments.getObjectById(segmentId),
+            popupPixel = W.map.getOLMap().getPixelFromLonLat(evt.object.lonlat),
+            htmlOut = ''
+                + '<div class="tippy-tooltip light-border-theme" id="hnNavPointsTooltipDiv-tooltip" data-size="large" data-animation="shift-away" data-state="visible"'
+                + '     data-interactive="" style="transition-duration:325ms; top:0px;">'
+                + ' <div class="tippy-arrow" id="hnNavPointsTooltipDiv-arrow" style="left:83px;"></div>'
+                + ' <div class="tippy-content" id="hnNavPointsTooltipDiv-content" data-state="visible" style="transition-duration: 325ms;">'
+                + '     <div>'
+                + '         <div class="house-number-marker-tooltip">'
+                + `             <div class="title">${(hnNumber > 0 ? `${hnNumber} ` : '')}${(street ? street.name : '')}</div>`
+                + '             <div class="edit-button fa fa-pencil" id="hnNavPointsTooltipDiv-edit"></div>'
+                + '         </div>'
+                + '     </div>'
+                + ' </div>'
+                + '</div>';
+        _$hnNavPointsTooltipDiv.html(htmlOut);
+        popupPixel.origX = popupPixel.x;
+        const popupWidthHalf = (_$hnNavPointsTooltipDiv.width() / 2);
+        let arrowOffset = (popupWidthHalf - 15),
+            xPlacement = 'top',
+            moveMap = false;
+        popupPixel.x = ((popupPixel.x - popupWidthHalf) > 0) ? (popupPixel.x - popupWidthHalf) : 10;
+        if (popupPixel.x === 10)
+            arrowOffset = popupPixel.origX - 22;
+        if ((popupPixel.x + (popupWidthHalf * 2)) > $('#map')[0].clientWidth) {
+            popupPixel.x = (popupPixel.origX - _$hnNavPointsTooltipDiv.width() + 8);
+            arrowOffset = (_$hnNavPointsTooltipDiv.width() - 30);
+            moveMap = true;
+        }
+        if (popupPixel.y - _$hnNavPointsTooltipDiv.height() < 0) {
+            popupPixel.y += 10;
+            xPlacement = 'bottom';
+        }
+        else {
+            popupPixel.y -= (_$hnNavPointsTooltipDiv.height() + 4);
+        }
+        $('#hnNavPointsTooltipDiv-edit').on('click', { segment, moveMap }, enterHNEditMode);
+        _$hnNavPointsTooltipDiv.css({ transform: `translate3d(${Math.round(popupPixel.x)}px, ${Math.round(popupPixel.y)}px, 0px)` });
+        $('#hnNavPointsTooltipDiv-arrow').css('left', Math.round(arrowOffset));
+        _$hnNavPointsTooltipDiv.attr('x-placement', xPlacement);
+        _$hnNavPointsTooltipDiv.css({ visibility: 'visible' });
+        _popup = { streetId, hn_number: hnNumber, inUse: true };
+    }
+}
+
+function hideTooltip() {
+    checkTimeout({ timeout: 'hideTooltip' });
+    _$hnNavPointsTooltipDiv.css({ visibility: 'hidden' });
+    _$hnNavPointsTooltipDiv.html('');
+    _popup = { streetId: -1, hnNumber: -1, inUse: false };
+}
+
+function hideTooltipDelay(evt) {
+    if (!evt)
+        return;
+    checkTimeout({ timeout: 'hideTooltip' });
+    const parentsArr = (evt.toElement && evt.toElement.offsetParent) ? [evt.toElement.offsetParent, evt.toElement.offsetParent.offSetParent] : [];
+    if (evt.toElement && ((parentsArr.indexOf(_HNNavPointsNumbersLayer.div) > -1) || (parentsArr.indexOf(_$hnNavPointsTooltipDiv[0]) > -1)))
+        return;
+    _timeouts.hideTooltip = window.setTimeout(hideTooltip, 100, evt);
+}
+
+function checkTooltip() {
+    checkTimeout({ timeout: 'hideTooltip' });
+}
+
+function injectOLIcon() {
+    logDebug('Injecting OL.Icon');
+    // eslint-disable-next-line
+    OL.Icon=OL.Class({url:null,size:null,offset:null,calculateOffset:null,imageDiv:null,px:null,initialize:function(a,b,c,d){this.url=a;this.size=b||{w:20,h:20};this.offset=c||{x:-(this.size.w/2),y:-(this.size.h/2)};this.calculateOffset=d;a=OL.Util.createUniqueID("OL_Icon_");this.imageDiv=OL.Util.createAlphaImageDiv(a)},destroy:function(){this.erase();OL.Event.stopObservingElement(this.imageDiv.firstChild);this.imageDiv.innerHTML="";this.imageDiv=null},clone:function(){returnnewOL.Icon(this.url,this.size,this.offset,this.calculateOffset)},setSize:function(a){null!=a&&(this.size=a);this.draw()},setUrl:function(a){null!=a&&(this.url=a);this.draw()},draw:function(a){OL.Util.modifyAlphaImageDiv(this.imageDiv,null,null,this.size,this.url,"absolute");this.moveTo(a);return this.imageDiv},erase:function(){null!=this.imageDiv&&null!=this.imageDiv.parentNode&&OL.Element.remove(this.imageDiv)},setOpacity:function(a){OL.Util.modifyAlphaImageDiv(this.imageDiv,null,null,null,null,null,null,null,a)},moveTo:function(a){null!=a&&(this.px=a);null!=this.imageDiv&&(null==this.px?this.display(!1):(this.calculateOffset&&(this.offset=this.calculateOffset(this.size)),OL.Util.modifyAlphaImageDiv(this.imageDiv,null,{x:this.px.x+this.offset.x,y:this.px.y+this.offset.y})))},display:function(a){this.imageDiv.style.display=a?"":"none"},isDrawn:function(){return this.imageDiv&&this.imageDiv.parentNode&&11!=this.imageDiv.parentNode.nodeType},CLASS_NAME:"OL.Icon"});
 }
 
 async function init() {
@@ -499,33 +637,20 @@ async function init() {
         displayInLayerSwitcher: true,
         uniqueName: '__HNNavPointsLayer'
     });
-    _HNNavPointsNumbersLayer = new OL.Layer.Vector('HN NavPoints Numbers Layer', {
+    _HNNavPointsNumbersLayer = new OL.Layer.Markers('HN NavPoints Numbers Layer', {
         displayInLayerSwitcher: true,
-        uniqueName: '__HNNavPointsNumbersLayer',
-        styleMap: new OL.StyleMap(
-            {
-                default: {
-                    strokeColor: '${Color}',
-                    strokeOpacity: 1,
-                    strokeWidth: 3,
-                    fillColor: '${Color}',
-                    fillOpacity: 0.5,
-                    pointerEvents: 'visiblePainted',
-                    label: '${hn_number}',
-                    fontSize: '12px',
-                    fontFamily: 'Arial Black, monospace',
-                    fontWeight: 'bold',
-                    labelOutlineColor: '${Color}',
-                    labelOutlineWidth: 3,
-                    labelSelect: true
-                }
-            }
-        )
+        uniqueName: '__HNNavPointsNumbersLayer'
     });
+    if (!OL.Icon)
+        injectOLIcon();
     W.map.getOLMap().addLayer(_HNNavPointsLayer);
     W.map.getOLMap().addLayer(_HNNavPointsNumbersLayer);
     _HNNavPointsLayer.setVisibility(_settings.hnLines);
     _HNNavPointsNumbersLayer.setVisibility(_settings.hnNumbers);
+    window._hnPoints = _HNNavPointsLayer;
+    window._hnNumbers = _HNNavPointsNumbersLayer;
+    _HNNavPointsLayer.setZIndex(500);
+    _HNNavPointsNumbersLayer.setZIndex(500);
     window.addEventListener('beforeunload', () => { checkShortcutsChanged(); }, false);
     new WazeWrap.Interface.Shortcut(
         'toggleHNNavPointsShortcut',
@@ -582,6 +707,15 @@ async function init() {
                 processSegs('settingChanged', W.model.segments.getByAttributes({ hasHNs: true }), true, 0);
         }
     });
+    if (!_$hnNavPointsTooltipDiv) {
+        $('#map').append(
+            '<div id="hnNavPointsTooltipDiv" class="tippy-popper" role="tooltip" x-placement="top" style="z-index:9999; transition-duration:0ms; position:absolute;'
+            + 'will-change:transform; top:0px; left:0px; visibility:none;"></div>'
+        );
+        _$hnNavPointsTooltipDiv = $('#hnNavPointsTooltipDiv');
+        _$hnNavPointsTooltipDiv.on('mouseleave', null, hideTooltipDelay);
+        _$hnNavPointsTooltipDiv.on('mouseenter', null, checkTooltip);
+    }
     await initBackgroundTasks('enable');
     log(`Fully initialized in ${Math.round(performance.now() - LOAD_BEGIN_TIME)} ms.`);
     showScriptInfoAlert();
