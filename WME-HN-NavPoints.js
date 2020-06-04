@@ -3,7 +3,7 @@
 // @name            WME HN NavPoints (beta)
 // @namespace       https://greasyfork.org/users/166843
 // @description     Shows navigation points of all house numbers in WME
-// @version         2019.12.18.01
+// @version         2020.06.04.01
 // @author          dBsooner
 // @grant           none
 // @require         https://greasyfork.org/scripts/24851-wazewrap/code/WazeWrap.js
@@ -12,7 +12,7 @@
 // @contributionURL https://github.com/WazeDev/Thank-The-Authors
 // ==/UserScript==
 
-/* global _, $, document, GM_info, localStorage, MutationObserver, OL, performance, W, WazeWrap, window */
+/* global _, $, document, GM_info, localStorage, MutationObserver, OpenLayers, performance, W, WazeWrap, window */
 
 /*
  * Original concept and code for WME HN NavPoints was written by MajkiiTelini. After version 0.6.6, this
@@ -29,7 +29,8 @@ const ALERT_UPDATE = true,
     SCRIPT_NAME = GM_info.script.name.replace('(beta)', 'β'),
     SCRIPT_VERSION = GM_info.script.version,
     SCRIPT_VERSION_CHANGES = ['<b>NEW:</b> HN number mouseover tooltip (zooms 6-10). Edit button for easy HN mode access.',
-        '<b>CHANGE:</b> Lots of under-the-hood stuff to increase performance.'],
+        '<b>CHANGE:</b> Lots of under-the-hood stuff to increase performance.',
+        '<b>CHANGE:</b> Latest WME update compatibility.'],
     SETTINGS_STORE_NAME = 'WMEHNNavPoints',
     _timeouts = {
         bootstrap: undefined,
@@ -355,15 +356,15 @@ function drawHNLines(houseNumberArr) {
             if (hnToRemove)
                 _HNNavPointsNumbersLayer.removeMarker(hnToRemove);
             _HNNavPointsLayer.removeFeatures(_HNNavPointsLayer.getFeaturesByAttribute('featureId', featureId));
-            const p1 = new OL.Geometry.Point(hnObj.getFractionPoint().x, hnObj.getFractionPoint().y),
-                p2 = new OL.Geometry.Point(hnObj.getGeometry().x, hnObj.getGeometry().y),
+            const p1 = new OpenLayers.Geometry.Point(hnObj.getFractionPoint().x, hnObj.getFractionPoint().y),
+                p2 = new OpenLayers.Geometry.Point(hnObj.getGeometry().x, hnObj.getGeometry().y),
                 // eslint-disable-next-line no-nested-ternary
                 strokeColor = (hnObj.isForced()
                     ? (!hnObj.getUpdatedBy()) ? 'red' : 'orange'
                     : (!hnObj.getUpdatedBy()) ? 'yellow' : 'white'
                 );
-            let lineString = new OL.Geometry.LineString([p1, p2]),
-                lineFeature = new OL.Feature.Vector(
+            let lineString = new OpenLayers.Geometry.LineString([p1, p2]),
+                lineFeature = new OpenLayers.Feature.Vector(
                     lineString,
                     { streetId, segmentId: hnObj.getSegmentId(), featureId },
                     {
@@ -371,8 +372,8 @@ function drawHNLines(houseNumberArr) {
                     }
                 );
             lineFeatures.push(lineFeature);
-            lineString = new OL.Geometry.LineString([p1, p2]);
-            lineFeature = new OL.Feature.Vector(
+            lineString = new OpenLayers.Geometry.LineString([p1, p2]);
+            lineFeature = new OpenLayers.Feature.Vector(
                 lineString,
                 { streetId, segmentId: hnObj.getSegmentId(), featureId },
                 {
@@ -383,8 +384,8 @@ function drawHNLines(houseNumberArr) {
             svg.setAttribute('style', `text-shadow:0 0 3px ${strokeColor},0 0 3px ${strokeColor},0 0 3px ${strokeColor},0 0 3px ${strokeColor},0 0 3px ${strokeColor},0 0 3px ${strokeColor},0 0 3px ${strokeColor},0 0 3px ${strokeColor},0 0 3px ${strokeColor},0 0 3px ${strokeColor};font-size:12px;font-weight:bold;font-family:Arial Black, monospace;`);
             svgText.textContent = hnObj.getNumber();
             svg.innerHTML = svgText.outerHTML;
-            const svgIcon = new OL.Icon(`data:image/svg+xml,${svg.outerHTML}`, { w: 40, h: 15 }),
-                markerFeature = new OL.Marker(new OL.LonLat(p2.x, p2.y), svgIcon);
+            const svgIcon = new OpenLayers.Icon(`data:image/svg+xml,${svg.outerHTML}`, { w: 40, h: 15 }),
+                markerFeature = new OpenLayers.Marker(new OpenLayers.LonLat(p2.x, p2.y), svgIcon);
             markerFeature.events.register('mouseover', null, invokeTooltip);
             markerFeature.events.register('mouseout', null, hideTooltipDelay);
             markerFeature.featureId = featureId;
@@ -537,14 +538,14 @@ function initBackgroundTasks(status) {
 function enterHNEditMode(evt) {
     if (evt && evt.data && evt.data.segment) {
         if (evt.data.moveMap)
-            W.map.setCenter(new OL.LonLat(evt.data.segment.getCenter().x, evt.data.segment.getCenter().y), W.map.getOLMap().getZoom());
+            W.map.setCenter(new OpenLayers.LonLat(evt.data.segment.getCenter().x, evt.data.segment.getCenter().y), W.map.getOLMap().getZoom());
         W.selectionManager.setSelectedModels(evt.data.segment);
         $('#segment-edit-general .edit-house-numbers').click();
     }
 }
 
 function showTooltip(evt) {
-    if (W.map.getOLMap().getZoom() < 6)
+    if ((W.map.getOLMap().getZoom() < 6) || (W.map.getOLMap().getLayersByName('houseNumberMarkers').length > 0))
         return;
     if (evt && evt.object && evt.object.featureId) {
         checkTooltip();
@@ -622,9 +623,9 @@ function checkTooltip() {
 }
 
 function injectOLIcon() {
-    logDebug('Injecting OL.Icon');
+    logDebug('Injecting OpenLayers.Icon');
     // eslint-disable-next-line
-    OL.Icon=OL.Class({url:null,size:null,offset:null,calculateOffset:null,imageDiv:null,px:null,initialize:function(a,b,c,d){this.url=a;this.size=b||{w:20,h:20};this.offset=c||{x:-(this.size.w/2),y:-(this.size.h/2)};this.calculateOffset=d;a=OL.Util.createUniqueID("OL_Icon_");this.imageDiv=OL.Util.createAlphaImageDiv(a)},destroy:function(){this.erase();OL.Event.stopObservingElement(this.imageDiv.firstChild);this.imageDiv.innerHTML="";this.imageDiv=null},clone:function(){returnnewOL.Icon(this.url,this.size,this.offset,this.calculateOffset)},setSize:function(a){null!=a&&(this.size=a);this.draw()},setUrl:function(a){null!=a&&(this.url=a);this.draw()},draw:function(a){OL.Util.modifyAlphaImageDiv(this.imageDiv,null,null,this.size,this.url,"absolute");this.moveTo(a);return this.imageDiv},erase:function(){null!=this.imageDiv&&null!=this.imageDiv.parentNode&&OL.Element.remove(this.imageDiv)},setOpacity:function(a){OL.Util.modifyAlphaImageDiv(this.imageDiv,null,null,null,null,null,null,null,a)},moveTo:function(a){null!=a&&(this.px=a);null!=this.imageDiv&&(null==this.px?this.display(!1):(this.calculateOffset&&(this.offset=this.calculateOffset(this.size)),OL.Util.modifyAlphaImageDiv(this.imageDiv,null,{x:this.px.x+this.offset.x,y:this.px.y+this.offset.y})))},display:function(a){this.imageDiv.style.display=a?"":"none"},isDrawn:function(){return this.imageDiv&&this.imageDiv.parentNode&&11!=this.imageDiv.parentNode.nodeType},CLASS_NAME:"OL.Icon"});
+    OpenLayers.Icon=OpenLayers.Class({url:null,size:null,offset:null,calculateOffset:null,imageDiv:null,px:null,initialize:function(a,b,c,d){this.url=a;this.size=b||{w:20,h:20};this.offset=c||{x:-(this.size.w/2),y:-(this.size.h/2)};this.calculateOffset=d;a=OL.Util.createUniqueID("OL_Icon_");this.imageDiv=OL.Util.createAlphaImageDiv(a)},destroy:function(){this.erase();OL.Event.stopObservingElement(this.imageDiv.firstChild);this.imageDiv.innerHTML="";this.imageDiv=null},clone:function(){returnnewOL.Icon(this.url,this.size,this.offset,this.calculateOffset)},setSize:function(a){null!=a&&(this.size=a);this.draw()},setUrl:function(a){null!=a&&(this.url=a);this.draw()},draw:function(a){OL.Util.modifyAlphaImageDiv(this.imageDiv,null,null,this.size,this.url,"absolute");this.moveTo(a);return this.imageDiv},erase:function(){null!=this.imageDiv&&null!=this.imageDiv.parentNode&&OL.Element.remove(this.imageDiv)},setOpacity:function(a){OL.Util.modifyAlphaImageDiv(this.imageDiv,null,null,null,null,null,null,null,a)},moveTo:function(a){null!=a&&(this.px=a);null!=this.imageDiv&&(null==this.px?this.display(!1):(this.calculateOffset&&(this.offset=this.calculateOffset(this.size)),OL.Util.modifyAlphaImageDiv(this.imageDiv,null,{x:this.px.x+this.offset.x,y:this.px.y+this.offset.y})))},display:function(a){this.imageDiv.style.display=a?"":"none"},isDrawn:function(){return this.imageDiv&&this.imageDiv.parentNode&&11!=this.imageDiv.parentNode.nodeType},CLASS_NAME:"OL.Icon"});
 }
 
 async function init() {
@@ -633,15 +634,15 @@ async function init() {
     WazeWrap.Interface.AddLayerCheckbox('display', 'HN NavPoints', _settings.hnLines, hnLayerToggled);
     WazeWrap.Interface.AddLayerCheckbox('display', 'HN NavPoints Numbers', _settings.hnNumbers, hnNumbersLayerToggled);
 
-    _HNNavPointsLayer = new OL.Layer.Vector('HN NavPoints Layer', {
+    _HNNavPointsLayer = new OpenLayers.Layer.Vector('HN NavPoints Layer', {
         displayInLayerSwitcher: true,
         uniqueName: '__HNNavPointsLayer'
     });
-    _HNNavPointsNumbersLayer = new OL.Layer.Markers('HN NavPoints Numbers Layer', {
+    _HNNavPointsNumbersLayer = new OpenLayers.Layer.Markers('HN NavPoints Numbers Layer', {
         displayInLayerSwitcher: true,
         uniqueName: '__HNNavPointsNumbersLayer'
     });
-    if (!OL.Icon)
+    if (!OpenLayers.Icon)
         injectOLIcon();
     W.map.getOLMap().addLayer(_HNNavPointsLayer);
     W.map.getOLMap().addLayer(_HNNavPointsNumbersLayer);
