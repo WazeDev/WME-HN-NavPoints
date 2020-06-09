@@ -3,7 +3,7 @@
 // @name            WME HN NavPoints (beta)
 // @namespace       https://greasyfork.org/users/166843
 // @description     Shows navigation points of all house numbers in WME
-// @version         2020.06.09.01
+// @version         2020.06.09.02
 // @author          dBsooner
 // @grant           none
 // @require         https://greasyfork.org/scripts/24851-wazewrap/code/WazeWrap.js
@@ -251,11 +251,10 @@ function processEvent(evt) {
         return;
     }
     if (W.map.getOLMap().getZoom() < _settings.disableBelowZoom) {
-        if (_processedSegments.length > 0)
-            destroyAllHNs();
+        destroyAllHNs();
         return;
     }
-    if (evt.type === 'loadstart') {
+    if (evt.type === 'reloadData') {
         destroyAllHNs();
     }
     else if ((evt.length === 1) && (evt[0].type === 'houseNumber')) {
@@ -263,7 +262,7 @@ function processEvent(evt) {
             _segmentsToProcess.push(evt[0].getSegmentId());
     }
     else if (evt.type === 'zoomend') {
-        if ((W.map.getOLMap().getZoom() < _settings.disableBelowZoom) && (_processedSegments.length > 0))
+        if ((W.map.getOLMap().getZoom() < _settings.disableBelowZoom))
             destroyAllHNs();
         if ((W.map.getOLMap().getZoom() > (_settings.disableBelowZoom - 1)) && (_processedSegments.length === 0))
             processSegs('zoomend', W.model.segments.getByAttributes({ hasHNs: true }), true);
@@ -511,7 +510,8 @@ function initBackgroundTasks(status) {
                     input[0].addEventListener('change', setMarkersEvents);
             });
         });
-        W.controller.events.on({ loadstart: processEvent });
+        W.accelerators.events.on({ reloadData: processEvent });
+        $('#overlay-buttons div.reload-button-region').on('click', null, destroyAllHNs);
         W.model.segments.on({ objectsadded: segmentsEvent, objectsremoved: segmentsEvent });
         W.model.segmentHouseNumbers.on({
             objectsadded: processEvent,
@@ -520,8 +520,9 @@ function initBackgroundTasks(status) {
             'objectschanged-id': processEvent,
             'objects-state-deleted': processEvent
         });
+        W.model.segmentHouseNumbers.on('objectschanged', this, processEvent);
         W.editingMediator.on({ 'change:editingHouseNumbers': observeHNLayer });
-        WazeWrap.Events.register('zoomend', null, processEvent);
+        W.map.events.on({ zoomend: processEvent });
         WazeWrap.Events.register('afterundoaction', this, processEvent);
         WazeWrap.Events.register('afteraction', this, processEvent);
         _timeouts.checkZIndex = window.setInterval(() => {
@@ -532,7 +533,8 @@ function initBackgroundTasks(status) {
     }
     else if (status === 'disable') {
         _HNLayerObserver = undefined;
-        W.controller.events.unregister('loadstart', null, processEvent);
+        W.accelerators.events.on('reloadData', null, processEvent);
+        $('#overlay-buttons div.reload-button-region').off('click', null, destroyAllHNs);
         W.model.segments.off({ objectsadded: segmentsEvent, objectsremoved: segmentsEvent });
         W.model.segmentHouseNumbers.off({
             objectsadded: processEvent,
@@ -542,7 +544,7 @@ function initBackgroundTasks(status) {
             'objects-state-deleted': processEvent
         });
         W.editingMediator.off({ 'change:editingHouseNumbers': observeHNLayer });
-        WazeWrap.Events.unregister('zoomend', null, processEvent);
+        W.map.events.unregister('zoomend', null, processEvent);
         WazeWrap.Events.unregister('afterundoaction', this, processEvent);
         WazeWrap.Events.unregister('afteraction', this, processEvent);
         window.clearInterval(_timeouts.checkZIndex);
