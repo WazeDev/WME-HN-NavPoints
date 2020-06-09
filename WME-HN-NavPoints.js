@@ -3,7 +3,7 @@
 // @name            WME HN NavPoints (beta)
 // @namespace       https://greasyfork.org/users/166843
 // @description     Shows navigation points of all house numbers in WME
-// @version         2020.06.09.02
+// @version         2020.06.09.03
 // @author          dBsooner
 // @grant           none
 // @require         https://greasyfork.org/scripts/24851-wazewrap/code/WazeWrap.js
@@ -520,7 +520,6 @@ function initBackgroundTasks(status) {
             'objectschanged-id': processEvent,
             'objects-state-deleted': processEvent
         });
-        W.model.segmentHouseNumbers.on('objectschanged', this, processEvent);
         W.editingMediator.on({ 'change:editingHouseNumbers': observeHNLayer });
         W.map.events.on({ zoomend: processEvent });
         WazeWrap.Events.register('afterundoaction', this, processEvent);
