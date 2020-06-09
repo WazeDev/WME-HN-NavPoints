@@ -3,7 +3,7 @@
 // @name            WME HN NavPoints (beta)
 // @namespace       https://greasyfork.org/users/166843
 // @description     Shows navigation points of all house numbers in WME
-// @version         2020.06.04.01
+// @version         2020.06.09.01
 // @author          dBsooner
 // @grant           none
 // @require         https://greasyfork.org/scripts/24851-wazewrap/code/WazeWrap.js
@@ -30,7 +30,8 @@ const ALERT_UPDATE = true,
     SCRIPT_VERSION = GM_info.script.version,
     SCRIPT_VERSION_CHANGES = ['<b>NEW:</b> HN number mouseover tooltip (zooms 6-10). Edit button for easy HN mode access.',
         '<b>CHANGE:</b> Lots of under-the-hood stuff to increase performance.',
-        '<b>CHANGE:</b> Latest WME update compatibility.'],
+        '<b>CHANGE:</b> Latest WME update compatibility.',
+        '<b>BUGFIX:</b> Reloads not properly refreshing HN and lines.'],
     SETTINGS_STORE_NAME = 'WMEHNNavPoints',
     _timeouts = {
         bootstrap: undefined,
@@ -47,6 +48,7 @@ let _settings = {},
     _HNNavPointsLayer,
     _HNNavPointsNumbersLayer,
     _processedSegments = [],
+    _segmentsToProcess = [],
     _$hnNavPointsTooltipDiv,
     _popup = {
         inUse: false,
@@ -221,13 +223,14 @@ function observeHNLayer() {
         _HNLayerObserver.disconnect();
         _HNLayerObserver.observing = false;
     }
+    setMarkersEvents();
 }
 
 function removeHNLines(hnObj) {
     if (!hnObj)
         return;
     const streetId = W.model.segments.getObjectById(hnObj.getSegmentId()).attributes.primaryStreetID,
-        featureId = `HNNavPoints|${streetId}|${hnObj.getNumber()}|${hnObj.getSegmentId()}|${hnObj.getID()}`,
+        featureId = `HNNavPoints|${streetId}|${hnObj.getNumber()}|${hnObj.getSegmentId()}`,
         linesToRemove = _HNNavPointsLayer.getFeaturesByAttribute('featureId', featureId),
         markerIdx = _HNNavPointsNumbersLayer.markers.map(marker => marker.featureId).indexOf(featureId),
         hnToRemove = (markerIdx > -1) ? _HNNavPointsNumbersLayer.markers[markerIdx] : null;
@@ -252,8 +255,12 @@ function processEvent(evt) {
             destroyAllHNs();
         return;
     }
-    if (evt.type === 'reloadData') {
+    if (evt.type === 'loadstart') {
         destroyAllHNs();
+    }
+    else if ((evt.length === 1) && (evt[0].type === 'houseNumber')) {
+        if (_segmentsToProcess.indexOf(evt[0].getSegmentId()) === -1)
+            _segmentsToProcess.push(evt[0].getSegmentId());
     }
     else if (evt.type === 'zoomend') {
         if ((W.map.getOLMap().getZoom() < _settings.disableBelowZoom) && (_processedSegments.length > 0))
@@ -317,8 +324,7 @@ function setMarkersEvents() {
         W.map.getOLMap().getLayersByName('houseNumberMarkers')[0].markers.forEach(marker => {
             marker.events.unregister('click:input', null, processEvent);
             marker.events.unregister('delete', null, processEvent);
-            marker.events.register('click:input', null, processEvent);
-            marker.events.register('delete', null, processEvent);
+            marker.events.on({ 'click:input': processEvent, delete: processEvent });
         });
     }
     else if (W.map.getOLMap().getLayersByName('houseNumberMarkers').length > 0) {
@@ -326,7 +332,8 @@ function setMarkersEvents() {
             marker.events.unregister('click:input', null, processEvent);
             marker.events.unregister('delete', null, processEvent);
         });
-        processSegs('exithousenumbers', W.model.segments.getByAttributes({ hasHNs: true }), true);
+        processSegs('exithousenumbers', W.model.segments.getByIds(_segmentsToProcess), true);
+        _segmentsToProcess = [];
         _HNNavPointsLayer.setZIndex(1000);
         _HNNavPointsNumbersLayer.setZIndex(1000);
     }
@@ -350,7 +357,7 @@ function drawHNLines(houseNumberArr) {
             seg = W.model.segments.objects[hnObj.getSegmentId()];
         if (seg) {
             const streetId = seg.attributes.primaryStreetID,
-                featureId = `HNNavPoints|${streetId}|${hnObj.getNumber()}|${hnObj.getSegmentId()}|${hnObj.getID()}`,
+                featureId = `HNNavPoints|${streetId}|${hnObj.getNumber()}|${hnObj.getSegmentId()}`,
                 markerIdx = _HNNavPointsNumbersLayer.markers.map(marker => marker.featureId).indexOf(featureId),
                 hnToRemove = (markerIdx > -1) ? _HNNavPointsNumbersLayer.markers[markerIdx] : null;
             if (hnToRemove)
@@ -398,15 +405,17 @@ function drawHNLines(houseNumberArr) {
 }
 
 function destroyAllHNs() {
-    return new Promise(resolve => {
-        _HNNavPointsLayer.destroyFeatures();
-        _HNNavPointsNumbersLayer.clearMarkers();
-        _processedSegments = [];
-        resolve();
-    });
+    _HNNavPointsLayer.destroyFeatures();
+    _HNNavPointsNumbersLayer.clearMarkers();
+    _processedSegments = [];
+    return Promise.resolve();
 }
 
 async function processSegs(action, arrSegObjs, processAll = false, retry = 0) {
+    /* As of 2020.06.08 (sometime before this date) updatedOn does not get updated when updating house numbers. Looking for a new
+     * way to track which segments have been updated most recently to prevent a total refresh of HNs after an event.
+     * Changed to using a global to keep track of segmentIds touched during HN edit mode.
+     */
     if (!_settings.hnLines && !_settings.hnNumbers) {
         if (_scriptActive)
             initBackgroundTasks('disable');
@@ -494,45 +503,53 @@ function segmentsEvent(objSegs) {
 }
 
 function initBackgroundTasks(status) {
-    return new Promise(resolve => {
-        if (status === 'enable') {
-            _HNLayerObserver = new MutationObserver(mutationsList => {
-                mutationsList.forEach(() => {
-                    const input = $('div.olLayerDiv.house-numbers-layer div.house-number div.content.active:not(".new") input.number');
-                    if (input.val() === '')
-                        input[0].addEventListener('change', setMarkersEvents);
-                });
+    if (status === 'enable') {
+        _HNLayerObserver = new MutationObserver(mutationsList => {
+            mutationsList.forEach(() => {
+                const input = $('div.olLayerDiv.house-numbers-layer div.house-number div.content.active:not(".new") input.number');
+                if (input.val() === '')
+                    input[0].addEventListener('change', setMarkersEvents);
             });
-            W.accelerators.events.register('reloadData', null, processEvent);
-            W.model.segments.on('objectsadded', segmentsEvent);
-            W.model.segments.on('objectsremoved', segmentsEvent);
-            W.editingMediator.on('change:editingHouseNumbers', setMarkersEvents);
-            W.editingMediator.on('change:editingHouseNumbers', observeHNLayer);
-            WazeWrap.Events.register('zoomend', null, processEvent);
-            WazeWrap.Events.register('afterundoaction', this, processEvent);
-            WazeWrap.Events.register('afteraction', this, processEvent);
-            _timeouts.checkZIndex = window.setInterval(() => {
-                if (`${_HNNavPointsNumbersLayer.div.style.zIndex}` !== '1000')
-                    _HNNavPointsNumbersLayer.setZIndex(1000);
-            }, 1000);
-            _scriptActive = true;
-        }
-        else if (status === 'disable') {
-            _HNLayerObserver = undefined;
-            W.accelerators.events.unregister('reloadData', null, processEvent);
-            W.model.segments.off('objectsadded', segmentsEvent);
-            W.model.segments.off('objectsremoved', segmentsEvent);
-            W.editingMediator.off('change:editingHouseNumbers', setMarkersEvents);
-            W.editingMediator.off('change:editingHouseNumbers', observeHNLayer);
-            WazeWrap.Events.unregister('zoomend', null, processEvent);
-            WazeWrap.Events.unregister('afterundoaction', this, processEvent);
-            WazeWrap.Events.unregister('afteraction', this, processEvent);
-            window.clearInterval(_timeouts.checkZIndex);
-            _timeouts.checkZIndex = undefined;
-            _scriptActive = false;
-        }
-        resolve();
-    });
+        });
+        W.controller.events.on({ loadstart: processEvent });
+        W.model.segments.on({ objectsadded: segmentsEvent, objectsremoved: segmentsEvent });
+        W.model.segmentHouseNumbers.on({
+            objectsadded: processEvent,
+            objectsremoved: processEvent,
+            objectschanged: processEvent,
+            'objectschanged-id': processEvent,
+            'objects-state-deleted': processEvent
+        });
+        W.editingMediator.on({ 'change:editingHouseNumbers': observeHNLayer });
+        WazeWrap.Events.register('zoomend', null, processEvent);
+        WazeWrap.Events.register('afterundoaction', this, processEvent);
+        WazeWrap.Events.register('afteraction', this, processEvent);
+        _timeouts.checkZIndex = window.setInterval(() => {
+            if (`${_HNNavPointsNumbersLayer.div.style.zIndex}` !== '1000')
+                _HNNavPointsNumbersLayer.setZIndex(1000);
+        }, 1000);
+        _scriptActive = true;
+    }
+    else if (status === 'disable') {
+        _HNLayerObserver = undefined;
+        W.controller.events.unregister('loadstart', null, processEvent);
+        W.model.segments.off({ objectsadded: segmentsEvent, objectsremoved: segmentsEvent });
+        W.model.segmentHouseNumbers.off({
+            objectsadded: processEvent,
+            objectsremoved: processEvent,
+            objectschanged: processEvent,
+            'objectschanged-id': processEvent,
+            'objects-state-deleted': processEvent
+        });
+        W.editingMediator.off({ 'change:editingHouseNumbers': observeHNLayer });
+        WazeWrap.Events.unregister('zoomend', null, processEvent);
+        WazeWrap.Events.unregister('afterundoaction', this, processEvent);
+        WazeWrap.Events.unregister('afteraction', this, processEvent);
+        window.clearInterval(_timeouts.checkZIndex);
+        _timeouts.checkZIndex = undefined;
+        _scriptActive = false;
+    }
+    return Promise.resolve();
 }
 
 function enterHNEditMode(evt) {
@@ -648,8 +665,6 @@ async function init() {
     W.map.getOLMap().addLayer(_HNNavPointsNumbersLayer);
     _HNNavPointsLayer.setVisibility(_settings.hnLines);
     _HNNavPointsNumbersLayer.setVisibility(_settings.hnNumbers);
-    window._hnPoints = _HNNavPointsLayer;
-    window._hnNumbers = _HNNavPointsNumbersLayer;
     _HNNavPointsLayer.setZIndex(500);
     _HNNavPointsNumbersLayer.setZIndex(500);
     window.addEventListener('beforeunload', () => { checkShortcutsChanged(); }, false);
