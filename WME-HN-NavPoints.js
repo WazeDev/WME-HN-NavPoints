@@ -3,7 +3,7 @@
 // @name            WME HN NavPoints (beta)
 // @namespace       https://greasyfork.org/users/166843
 // @description     Shows navigation points of all house numbers in WME
-// @version         2020.07.08.02
+// @version         2020.07.10.01
 // @author          dBsooner
 // @grant           none
 // @require         https://greasyfork.org/scripts/24851-wazewrap/code/WazeWrap.js
@@ -30,7 +30,8 @@ const ALERT_UPDATE = true,
     SCRIPT_VERSION = GM_info.script.version,
     SCRIPT_VERSION_CHANGES = ['<b>NEW:</b> Setting to disable house number mouseover tooltip.',
         '<b>NEW:</b> Setting to disable keeping the house numbers layer on top of all other layers.',
-        '<b>CHANGE:</b> Changes to allow for better ability to select features behind house numbers: house numbers smaller, nav point line layer zindex.'],
+        '<b>CHANGE:</b> Changes to allow for better ability to select features behind house numbers: house numbers smaller, nav point line layer zindex.',
+        '<b>BUGFIX:</b> Incorrect display, omitting of data in a right-to-left text locale.'],
     SETTINGS_STORE_NAME = 'WMEHNNavPoints',
     _spinners = {
         processSegs: false
@@ -235,7 +236,7 @@ function removeHNLines(hnObj) {
     if (!hnObj)
         return;
     const streetId = W.model.segments.getObjectById(hnObj.getSegmentId()).attributes.primaryStreetID,
-        featureId = `HNNavPoints|${streetId}|${hnObj.getNumber()}|${hnObj.getSegmentId()}`,
+        featureId = `HNNavPoints|${streetId}|${hnObj.getSegmentId()}|${hnObj.getNumber()}`,
         linesToRemove = _HNNavPointsLayer.getFeaturesByAttribute('featureId', featureId),
         markerIdx = _HNNavPointsNumbersLayer.markers.map(marker => marker.featureId).indexOf(featureId),
         hnToRemove = (markerIdx > -1) ? _HNNavPointsNumbersLayer.markers[markerIdx] : null;
@@ -352,18 +353,20 @@ function drawHNLines(houseNumberArr) {
         invokeTooltip = evt => { showTooltip(evt); };
     svg.setAttribute('xlink', 'http://www.w3.org/1999/xlink');
     svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
-    svg.setAttribute('viewBox', '0 0 40 15');
+    svg.setAttribute('viewBox', '0 0 40 14');
     svgText.setAttribute('text-anchor', 'middle');
-    svgText.setAttribute('x', '50%');
-    svgText.setAttribute('y', '60%');
+    svgText.setAttribute('x', '20');
+    svgText.setAttribute('y', '10');
     for (let i = 0; i < houseNumberArr.length; i++) {
         const hnObj = houseNumberArr[i],
             seg = W.model.segments.objects[hnObj.getSegmentId()];
         if (seg) {
             const streetId = seg.attributes.primaryStreetID,
-                featureId = `HNNavPoints|${streetId}|${hnObj.getNumber()}|${hnObj.getSegmentId()}`,
+                featureId = `HNNavPoints|${streetId}|${hnObj.getSegmentId()}|${hnObj.getNumber()}`,
                 markerIdx = _HNNavPointsNumbersLayer.markers.map(marker => marker.featureId).indexOf(featureId),
-                hnToRemove = (markerIdx > -1) ? _HNNavPointsNumbersLayer.markers[markerIdx] : null;
+                hnToRemove = (markerIdx > -1) ? _HNNavPointsNumbersLayer.markers[markerIdx] : null,
+                rtlChar = /[\u0590-\u083F]|[\u08A0-\u08FF]|[\uFB1D-\uFDFF]|[\uFE70-\uFEFF]/mg,
+                textDir = (hnObj.getNumber().match(rtlChar) !== null) ? 'rtl' : 'ltr';
             if (hnToRemove)
                 _HNNavPointsNumbersLayer.removeMarker(hnToRemove);
             _HNNavPointsLayer.removeFeatures(_HNNavPointsLayer.getFeaturesByAttribute('featureId', featureId));
@@ -392,10 +395,10 @@ function drawHNLines(houseNumberArr) {
                 }
             );
             lineFeatures.push(lineFeature);
-            svg.setAttribute('style', `text-shadow:0 0 3px ${strokeColor},0 0 3px ${strokeColor},0 0 3px ${strokeColor},0 0 3px ${strokeColor},0 0 3px ${strokeColor},0 0 3px ${strokeColor},0 0 3px ${strokeColor},0 0 3px ${strokeColor},0 0 3px ${strokeColor},0 0 3px ${strokeColor};font-size:11px;font-weight:bold;font-family:Arial Black, monospace;`);
+            svg.setAttribute('style', `text-shadow:0 0 3px ${strokeColor},0 0 3px ${strokeColor},0 0 3px ${strokeColor},0 0 3px ${strokeColor},0 0 3px ${strokeColor},0 0 3px ${strokeColor};font-size:14px;font-weight:bold;font-family:"Open Sans", "Arial Unicode MS", "sans-serif";direction:${textDir}`);
             svgText.textContent = hnObj.getNumber();
             svg.innerHTML = svgText.outerHTML;
-            const svgIcon = new OpenLayers.Icon(`data:image/svg+xml,${svg.outerHTML}`, { w: 40, h: 15 }),
+            const svgIcon = new OpenLayers.Icon(`data:image/svg+xml,${svg.outerHTML}`, { w: 40, h: 18 }),
                 markerFeature = new OpenLayers.Marker(new OpenLayers.LonLat(p2.x, p2.y), svgIcon);
             markerFeature.events.register('mouseover', null, invokeTooltip);
             markerFeature.events.register('mouseout', null, hideTooltipDelay);
@@ -574,8 +577,8 @@ function showTooltip(evt) {
         checkTooltip();
         const featureArr = evt.object.featureId.split('|'),
             streetId = featureArr[1],
-            hnNumber = featureArr[2],
-            segmentId = featureArr[3];
+            segmentId = featureArr[2],
+            hnNumber = featureArr[3] || '';
         if (_popup.inUse && (_popup.hnNumber === hnNumber) && (_popup.streetId === streetId))
             return;
         const street = W.model.streets.getObjectById(streetId),
@@ -588,8 +591,8 @@ function showTooltip(evt) {
                 + ' <div class="tippy-content" id="hnNavPointsTooltipDiv-content" data-state="visible" style="transition-duration: 325ms;">'
                 + '     <div>'
                 + '         <div class="house-number-marker-tooltip">'
-                + `             <div class="title">${(hnNumber > 0 ? `${hnNumber} ` : '')}${(street ? street.name : '')}</div>`
-                + '             <div class="edit-button fa fa-pencil" id="hnNavPointsTooltipDiv-edit"></div>'
+                + `             <div class="title" dir="auto">${hnNumber} ${(street ? street.name : '')}</div>`
+                + `             <div class="edit-button fa fa-pencil" id="hnNavPointsTooltipDiv-edit" ${(segment.canEditHouseNumbers() ? '' : ' style="display:none"')}></div>`
                 + '         </div>'
                 + '     </div>'
                 + ' </div>'
