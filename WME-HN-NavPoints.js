@@ -3,7 +3,7 @@
 // @name            WME HN NavPoints (beta)
 // @namespace       https://greasyfork.org/users/166843
 // @description     Shows navigation points of all house numbers in WME
-// @version         2020.07.18.01
+// @version         2020.07.17.01
 // @author          dBsooner
 // @grant           none
 // @require         https://greasyfork.org/scripts/24851-wazewrap/code/WazeWrap.js
