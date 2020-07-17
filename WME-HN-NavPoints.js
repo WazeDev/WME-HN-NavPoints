@@ -3,7 +3,7 @@
 // @name            WME HN NavPoints (beta)
 // @namespace       https://greasyfork.org/users/166843
 // @description     Shows navigation points of all house numbers in WME
-// @version         2020.07.16.02
+// @version         2020.07.18.01
 // @author          dBsooner
 // @grant           none
 // @require         https://greasyfork.org/scripts/24851-wazewrap/code/WazeWrap.js
@@ -30,9 +30,7 @@ const ALERT_UPDATE = true,
     SCRIPT_VERSION = GM_info.script.version,
     SCRIPT_VERSION_CHANGES = ['<b>NEW:</b> Setting to disable house number mouseover tooltip.',
         '<b>NEW:</b> With the mouseover tooltip disabled, script reverts to previous style of numbers to increase performance.',
-        /* 2018.07.16.01
-        '<b>NEW:</b> Setting to disable keeping the house numbers layer on top of all other layers.',
-        */
+        '<b>NEW:</b> Setting to disable keeping the house numbers layer on top of other layers.',
         '<b>CHANGE:</b> Changes to allow for better ability to select features behind house numbers: house numbers smaller, nav point line layer zindex.',
         '<b>BUGFIX:</b> Incorrect display, omitting of data in a right-to-left text locale.',
         '<B>BUGFIX:</b> Memory management by removing lines and numbers no longer in the map extent.'],
@@ -42,7 +40,6 @@ const ALERT_UPDATE = true,
     },
     _timeouts = {
         bootstrap: undefined,
-        checkZIndex: undefined,
         hideTooltip: undefined,
         saveSettingsToStorage: undefined,
         setMarkerEvents: undefined
@@ -80,9 +77,7 @@ async function loadSettingsFromStorage() {
             enableTooltip: true,
             hnLines: true,
             hnNumbers: true,
-            /* 2020.07.16.01 - See note at top
             keepHNLayerOnTop: true,
-            */
             toggleHNNavPointsShortcut: '',
             toggleHNNavPointsNumbersShortcut: '',
             lastSaved: 0,
@@ -354,10 +349,6 @@ function setMarkersEvents() {
         });
         processSegs('exithousenumbers', W.model.segments.getByIds(_segmentsToProcess), true);
         _segmentsToProcess = [];
-        /* 2020.07.16.01 - See note at top
-        _HNNavPointsLayer.setZIndex(500);
-        _HNNavPointsNumbersLayer.setZIndex((_settings.keepHNLayerOnTop ? 1000 : 500));
-        */
     }
 }
 
@@ -580,15 +571,13 @@ function initBackgroundTasks(status) {
             'objects-state-deleted': processEvent
         });
         W.editingMediator.on({ 'change:editingHouseNumbers': observeHNLayer });
-        W.map.events.on({ zoomend: processEvent });
+        W.map.getOLMap().events.on({
+            zoomend: processEvent, addlayer: checkLayerIndex, removelayer: checkLayerIndex
+        });
         WazeWrap.Events.register('afterundoaction', this, processEvent);
         WazeWrap.Events.register('afteraction', this, processEvent);
         /* 2020.07.16.01 - See note at top
         _hnMouseoverCtrl.activate();
-        _timeouts.checkZIndex = window.setInterval(() => {
-            if (`${_HNNavPointsNumbersLayer.div.style.zIndex}` !== (_settings.keepHNLayerOnTop ? '1000' : '500'))
-                _HNNavPointsNumbersLayer.setZIndex((_settings.keepHNLayerOnTop ? 1000 : 500));
-        }, 1000);
         */
         _scriptActive = true;
     }
@@ -596,8 +585,8 @@ function initBackgroundTasks(status) {
         _HNLayerObserver = undefined;
         W.accelerators.events.on('reloadData', null, processEvent);
         $('#overlay-buttons div.reload-button-region').off('click', null, destroyAllHNs);
-        W.model.segments.on('objectsadded', segmentsEvent, { action: 'objectsadded' });
-        W.model.segments.on('objectsremoved', segmentsEvent, { action: 'objectsremoved' });
+        W.model.segments.off('objectsadded', segmentsEvent, { action: 'objectsadded' });
+        W.model.segments.off('objectsremoved', segmentsEvent, { action: 'objectsremoved' });
         W.model.segmentHouseNumbers.off({
             objectsadded: processEvent,
             objectsremoved: processEvent,
@@ -606,13 +595,13 @@ function initBackgroundTasks(status) {
             'objects-state-deleted': processEvent
         });
         W.editingMediator.off({ 'change:editingHouseNumbers': observeHNLayer });
-        W.map.events.unregister('zoomend', null, processEvent);
+        W.map.getOLMap().events.unregister('zoomend', null, processEvent);
+        W.map.getOLMap().events.unregister('addlayer', null, checkLayerIndex);
+        W.map.getOLMap().events.unregister('removelayer', null, checkLayerIndex);
         WazeWrap.Events.unregister('afterundoaction', this, processEvent);
         WazeWrap.Events.unregister('afteraction', this, processEvent);
         /* 2020.07.16.01 - See note at top
         _hnMouseoverCtrl.deactivate();
-        window.clearInterval(_timeouts.checkZIndex);
-        _timeouts.checkZIndex = undefined;
         */
         _scriptActive = false;
     }
@@ -721,6 +710,27 @@ function injectOLIcon() {
     OpenLayers.Icon=OpenLayers.Class({url:null,size:null,offset:null,calculateOffset:null,imageDiv:null,px:null,initialize:function(a,b,c,d){this.url=a;this.size=b||{w:20,h:20};this.offset=c||{x:-(this.size.w/2),y:-(this.size.h/2)};this.calculateOffset=d;a=OpenLayers.Util.createUniqueID("OL_Icon_");this.imageDiv=OpenLayers.Util.createAlphaImageDiv(a)},destroy:function(){this.erase();OpenLayers.Event.stopObservingElement(this.imageDiv.firstChild);this.imageDiv.innerHTML="";this.imageDiv=null},clone:function(){return new OpenLayers.Icon(this.url,this.size,this.offset,this.calculateOffset)},setSize:function(a){null!=a&&(this.size=a);this.draw()},setUrl:function(a){null!=a&&(this.url=a);this.draw()},draw:function(a){OpenLayers.Util.modifyAlphaImageDiv(this.imageDiv,null,null,this.size,this.url,"absolute");this.moveTo(a);return this.imageDiv},erase:function(){null!=this.imageDiv&&null!=this.imageDiv.parentNode&&OpenLayers.Element.remove(this.imageDiv)},setOpacity:function(a){OpenLayers.Util.modifyAlphaImageDiv(this.imageDiv,null,null,null,null,null,null,null,a)},moveTo:function(a){null!=a&&(this.px=a);null!=this.imageDiv&&(null==this.px?this.display(!1):(this.calculateOffset&&(this.offset=this.calculateOffset(this.size)),OpenLayers.Util.modifyAlphaImageDiv(this.imageDiv,null,{x:this.px.x+this.offset.x,y:this.px.y+this.offset.y})))},display:function(a){this.imageDiv.style.display=a?"":"none"},isDrawn:function(){return this.imageDiv&&this.imageDiv.parentNode&&11!=this.imageDiv.parentNode.nodeType},CLASS_NAME:"OpenLayers.Icon"});
 }
 
+function checkLayerIndex() {
+    const layerIdx = W.map.getOLMap().layers.map(a => a.uniqueName).indexOf('__HNNavPointsNumbersLayer');
+    let properIdx;
+    if (_settings.keepHNLayerOnTop) {
+        const layersIndexes = [],
+            layersLoaded = W.map.getOLMap().layers.map(a => a.uniqueName);
+        ['wmeGISLayersDefault', '__HNNavPointsLayer'].forEach(layerUniqueName => {
+            if (layersLoaded.indexOf(layerUniqueName) > 0)
+                layersIndexes.push(layersLoaded.indexOf(layerUniqueName));
+        });
+        properIdx = (Math.max(...layersIndexes) + 1);
+    }
+    else {
+        properIdx = (W.map.getOLMap().layers.map(a => a.uniqueName).indexOf('__HNNavPointsLayer') + 1);
+    }
+    if (layerIdx !== properIdx) {
+        W.map.getOLMap().layers.splice(properIdx, 0, W.map.getOLMap().layers.splice(layerIdx, 1)[0]);
+        W.map.getOLMap().resetLayersZIndex();
+    }
+}
+
 async function init() {
     const navPointsNumbersLayersOptions = {
         displayInLayerSwitcher: true,
@@ -766,8 +776,6 @@ async function init() {
     _HNNavPointsLayer.setVisibility(_settings.hnLines);
     _HNNavPointsNumbersLayer.setVisibility(_settings.hnNumbers);
     /* 2020.07.16.01 - See note at top
-    _HNNavPointsLayer.setZIndex(500);
-    _HNNavPointsNumbersLayer.setZIndex((_settings.keepHNLayerOnTop ? 1000 : 500));
     _hnMouseoverCtrl = new OpenLayers.Control.SelectFeature(_HNNavPointsNumbersLayer, {
         hover: true,
         highlightOnly: true,
@@ -817,11 +825,9 @@ async function init() {
             + `<input type="checkbox" style="margin-top:1px;" id="HNNavPoints_cbenableTooltip" title="Enable tooltip when mousing over house numbers."${(_settings.enableTooltip ? ' checked' : '')}>`
             + '     <label for="HNNavPoints_cbenableTooltip" style="font-weight:normal; vertical-align:top"'
             + '         title="Enable tooltip when mousing over house numbers.\r\nWarning: This may cause performance issues.">Enable tooltip</label><br>'
-            /* 2020.07.16.01 - See note at top
             + '<input type="checkbox" style="margin-top:1px;" id="HNNavPoints_cbkeepHNLayerOnTop" '
             + `title="Keep house numbers layer on top of all other layers."${(_settings.keepHNLayerOnTop ? ' checked' : '')}>`
             + '     <label for="HNNavPoints_cbenableTooltip" style="font-weight:normal; vertical-align:top" title="Keep house numbers layer on top of all other layers.">Keep HN layer on top</label>'
-            */
             + '</div>'
             + '<div style="margin:0 10px 0 10px; width:130px; text-align:center; font-size:12px; background:black; font-weight:600;">'
             + ' <div style="text-shadow:0 0 3px white,0 0 3px white,0 0 3px white,0 0 3px white,0 0 3px white,0 0 3px white,0 0 3px white,0 0 3px white,0 0 3px white,0 0 3px white;">Touched</div>'
@@ -862,14 +868,8 @@ async function init() {
             _HNNavPointsNumbersLayer.setVisibility(_settings.hnNumbers);
         }
         _settings[settingName] = this.checked;
-        /* 2020.07.16.01 - See note at top
-        if (settingName === 'keepHNLayerOnTop') {
-            if (this.checked)
-                _HNNavPointsNumbersLayer.setZIndex(1000);
-            else
-                _HNNavPointsNumbersLayer.setZIndex(500);
-        }
-        */
+        if (settingName === 'keepHNLayerOnTop')
+            checkLayerIndex();
         saveSettingsToStorage();
         if ((settingName === 'enableTooltip') && (W.map.getOLMap().getZoom() > (_settings.disableBelowZoom - 1)) && (_settings.hnLines || _settings.hnNumbers))
             processSegs('settingChanged', W.model.segments.getByAttributes({ hasHNs: true }), true, 0);
@@ -884,6 +884,7 @@ async function init() {
         _$hnNavPointsTooltipDiv.on('mouseenter', null, checkTooltip);
     }
     await initBackgroundTasks('enable');
+    checkLayerIndex();
     log(`Fully initialized in ${Math.round(performance.now() - LOAD_BEGIN_TIME)} ms.`);
     showScriptInfoAlert();
     if (_scriptActive)
