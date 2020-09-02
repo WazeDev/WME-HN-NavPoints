@@ -3,7 +3,7 @@
 // @name            WME HN NavPoints (beta)
 // @namespace       https://greasyfork.org/users/166843
 // @description     Shows navigation points of all house numbers in WME
-// @version         2020.07.27.02
+// @version         2020.09.02.01
 // @author          dBsooner
 // @grant           none
 // @require         https://greasyfork.org/scripts/24851-wazewrap/code/WazeWrap.js
@@ -28,15 +28,11 @@ const ALERT_UPDATE = true,
     SCRIPT_GF_URL = 'https://greasyfork.org/en/scripts/390565-wme-hn-navpoints',
     SCRIPT_NAME = GM_info.script.name.replace('(beta)', 'β'),
     SCRIPT_VERSION = GM_info.script.version,
-    SCRIPT_VERSION_CHANGES = ['<b>NEW:</b> Setting to disable house number mouseover tooltip.',
-        '<b>NEW:</b> With the mouseover tooltip disabled, script reverts to previous style of numbers to increase performance.',
-        '<b>NEW:</b> Setting to disable keeping the house numbers layer on top of other layers.',
-        '<b>CHANGE:</b> Changes to allow for better ability to select features behind house numbers: house numbers smaller, nav point line layer zindex.',
-        '<b>CHANGE:</b> WME map object references.',
-        '<b>BUGFIX:</b> Incorrect display, omitting of data in a right-to-left text locale.',
-        '<B>BUGFIX:</b> Memory management by removing lines and numbers no longer in the map extent.'],
+    SCRIPT_VERSION_CHANGES = ['<b>CHANGE:</b> Allow HNs to be drawn concurrently with other map features. (MUCH faster)'],
     SETTINGS_STORE_NAME = 'WMEHNNavPoints',
     _spinners = {
+        destroyAllHNs: false,
+        drawHNLines: false,
         processSegs: false
     },
     _timeouts = {
@@ -356,6 +352,7 @@ function setMarkersEvents() {
 function drawHNLines(houseNumberArr) {
     if (houseNumberArr.length === 0)
         return;
+    doSpinner('drawHNLines', true);
     const lineFeatures = [],
         numberFeatures = !_settings.enableTooltip ? [] : undefined,
         svg = _settings.enableTooltip ? document.createElementNS('http://www.w3.org/2000/svg', 'svg') : undefined,
@@ -436,19 +433,21 @@ function drawHNLines(houseNumberArr) {
         _HNNavPointsLayer.addFeatures(lineFeatures);
     if (!_settings.enableTooltip && (numberFeatures.length > 0))
         _HNNavPointsNumbersLayer.addFeatures(numberFeatures);
+    doSpinner('drawHNLines', false);
 }
 
 function destroyAllHNs() {
+    doSpinner('destroyAllHNs', true);
     _HNNavPointsLayer.destroyFeatures();
     if (_settings.enableTooltip)
         _HNNavPointsNumbersLayer.clearMarkers();
     else
         _HNNavPointsNumbersLayer.destroyFeatures();
     _processedSegments = [];
-    return Promise.resolve();
+    doSpinner('destroyAllHNs', false);
 }
 
-async function processSegs(action, arrSegObjs, processAll = false, retry = 0) {
+function processSegs(action, arrSegObjs, processAll = false, retry = 0) {
     /* As of 2020.06.08 (sometime before this date) updatedOn does not get updated when updating house numbers. Looking for a new
      * way to track which segments have been updated most recently to prevent a total refresh of HNs after an event.
      * Changed to using a global to keep track of segmentIds touched during HN edit mode.
@@ -459,9 +458,7 @@ async function processSegs(action, arrSegObjs, processAll = false, retry = 0) {
         return;
     }
     if ((action === 'settingChanged') && (W.map.getZoom() < _settings.disableBelowZoom)) {
-        doSpinner('processSegs', true);
-        await destroyAllHNs();
-        doSpinner('processSegs', false);
+        destroyAllHNs();
         return;
     }
     if (!arrSegObjs || (arrSegObjs.length === 0) || (W.map.getZoom() < _settings.disableBelowZoom))
@@ -475,6 +472,10 @@ async function processSegs(action, arrSegObjs, processAll = false, retry = 0) {
                 processSegs(action, chunk, true, ++retry);
             else
                 logError(`Get HNs for ${chunk.length} segments failed. Code: ${err.status} - Text: ${err.responseText}`);
+        },
+        processJSON = jsonData => {
+            if (jsonData && (jsonData.error === undefined) && (typeof jsonData.segmentHouseNumbers.objects !== 'undefined'))
+                drawHNLines(jsonData.segmentHouseNumbers.objects);
         };
     if (action === 'objectsremoved') {
         if (arrSegObjs && (arrSegObjs.length > 0)) {
@@ -505,8 +506,7 @@ async function processSegs(action, arrSegObjs, processAll = false, retry = 0) {
         }
     }
     else { // action = 'objectsadded', 'zoomend', 'init', 'exithousenumbers', 'hnLayerToggled', 'hnNumbersLayerToggled', 'settingChanged'
-        let i = arrSegObjs.length,
-            hnObjs = [];
+        let i = arrSegObjs.length;
         while (i--) {
             const segIdx = findObjIndex(_processedSegments, 'segId', arrSegObjs[i].getID());
             if (segIdx > -1) {
@@ -520,8 +520,7 @@ async function processSegs(action, arrSegObjs, processAll = false, retry = 0) {
             }
         }
         while (arrSegObjs.length > 0) {
-            let jsonData,
-                chunk;
+            let chunk;
             if (retry === 1)
                 chunk = arrSegObjs.splice(0, 250);
             else if (retry === 2)
@@ -533,16 +532,12 @@ async function processSegs(action, arrSegObjs, processAll = false, retry = 0) {
             else
                 chunk = arrSegObjs.splice(0, 500);
             try {
-                jsonData = await W.controller.descartesClient.getHouseNumbers(chunk.map(segObj => segObj.getID()));
+                W.controller.descartesClient.getHouseNumbers(chunk.map(segObj => segObj.getID())).then(processJSON).catch(error => processError(error, [...chunk]));
             }
             catch (error) {
                 processError(error, [...chunk]);
             }
-            if (jsonData && (jsonData.error === undefined) && (typeof jsonData.segmentHouseNumbers.objects !== 'undefined'))
-                hnObjs = hnObjs.concat(jsonData.segmentHouseNumbers.objects);
         }
-        if (hnObjs.length > 0)
-            drawHNLines(hnObjs);
     }
     doSpinner('processSegs', false);
 }
@@ -704,12 +699,50 @@ function hideTooltipDelay(evt) {
 function checkTooltip() {
     checkTimeout({ timeout: 'hideTooltip' });
 }
-
+/* eslint-disable */
 function injectOLIcon() {
     logDebug('Injecting OpenLayers.Icon');
-    // eslint-disable-next-line
-    OpenLayers.Icon=OpenLayers.Class({url:null,size:null,offset:null,calculateOffset:null,imageDiv:null,px:null,initialize:function(a,b,c,d){this.url=a;this.size=b||{w:20,h:20};this.offset=c||{x:-(this.size.w/2),y:-(this.size.h/2)};this.calculateOffset=d;a=OpenLayers.Util.createUniqueID("OL_Icon_");this.imageDiv=OpenLayers.Util.createAlphaImageDiv(a)},destroy:function(){this.erase();OpenLayers.Event.stopObservingElement(this.imageDiv.firstChild);this.imageDiv.innerHTML="";this.imageDiv=null},clone:function(){return new OpenLayers.Icon(this.url,this.size,this.offset,this.calculateOffset)},setSize:function(a){null!=a&&(this.size=a);this.draw()},setUrl:function(a){null!=a&&(this.url=a);this.draw()},draw:function(a){OpenLayers.Util.modifyAlphaImageDiv(this.imageDiv,null,null,this.size,this.url,"absolute");this.moveTo(a);return this.imageDiv},erase:function(){null!=this.imageDiv&&null!=this.imageDiv.parentNode&&OpenLayers.Element.remove(this.imageDiv)},setOpacity:function(a){OpenLayers.Util.modifyAlphaImageDiv(this.imageDiv,null,null,null,null,null,null,null,a)},moveTo:function(a){null!=a&&(this.px=a);null!=this.imageDiv&&(null==this.px?this.display(!1):(this.calculateOffset&&(this.offset=this.calculateOffset(this.size)),OpenLayers.Util.modifyAlphaImageDiv(this.imageDiv,null,{x:this.px.x+this.offset.x,y:this.px.y+this.offset.y})))},display:function(a){this.imageDiv.style.display=a?"":"none"},isDrawn:function(){return this.imageDiv&&this.imageDiv.parentNode&&11!=this.imageDiv.parentNode.nodeType},CLASS_NAME:"OpenLayers.Icon"});
+    OpenLayers.Icon = OpenLayers.Class({
+        url: null,
+        size: null,
+        offset: null,
+        calculateOffset: null,
+        imageDiv: null,
+        px: null,
+        initialize: function(a, b, c, d) {
+            this.url = a;
+            this.size = b || { w: 20, h: 20 };
+            this.offset = c || { x: -(this.size.w / 2), y: -(this.size.h / 2) };
+            this.calculateOffset = d;
+            a = OpenLayers.Util.createUniqueID('OL_Icon_');
+            this.imageDiv = OpenLayers.Util.createAlphaImageDiv(a);
+            $(this.imageDiv.firstChild).removeClass('olAlphaImg'); // LEAVE THIS LINE TO PREVENT WME-HARDHATS SCRIPT FROM TURNING ALL ICONS INTO HARDHAT WAZERS --MAPOMATIC
+        },
+        destroy: function() { this.erase(); OpenLayers.Event.stopObservingElement(this.imageDiv.firstChild); this.imageDiv.innerHTML = ''; this.imageDiv = null; },
+        clone: function() { return new OpenLayers.Icon(this.url, this.size, this.offset, this.calculateOffset); },
+        setSize: function(a) { null !== a && (this.size = a); this.draw(); },
+        setUrl: function(a) { null !== a && (this.url = a); this.draw(); },
+        draw: function(a) {
+            OpenLayers.Util.modifyAlphaImageDiv(this.imageDiv, null, null, this.size, this.url, 'absolute');
+            this.moveTo(a);
+            return this.imageDiv;
+        },
+        erase: function() { null !== this.imageDiv && null !== this.imageDiv.parentNode && OpenLayers.Element.remove(this.imageDiv); },
+        setOpacity: function(a) { OpenLayers.Util.modifyAlphaImageDiv(this.imageDiv, null, null, null, null, null, null, null, a); },
+        moveTo: function(a) {
+            null !== a && (this.px = a);
+            null !== this.imageDiv && (null === this.px ? this.display(!1) : (
+                this.calculateOffset && (this.offset = this.calculateOffset(this.size)),
+                OpenLayers.Util.modifyAlphaImageDiv(this.imageDiv, null ,{x: this.px.x + this.offset.x, y: this.px.y + this.offset.y })
+            ));
+        },
+        display: function(a) { this.imageDiv.style.display = a ? '' : 'none'; },
+        isDrawn: function() { return this.imageDiv && this.imageDiv.parentNode && 11 != this.imageDiv.parentNode.nodeType; },
+        CLASS_NAME: 'OpenLayers.Icon'
+    });
 }
+/* eslint-enable */
+/* eslint-disable no-template-curly-in-string */
 
 function checkLayerIndex() {
     const layerIdx = W.map.layers.map(a => a.uniqueName).indexOf('__HNNavPointsNumbersLayer');
