@@ -3,7 +3,7 @@
 // @name            WME HN NavPoints (beta)
 // @namespace       https://greasyfork.org/users/166843
 // @description     Shows navigation points of all house numbers in WME
-// @version         2020.09.25.01
+// @version         2020.09.25.02
 // @author          dBsooner
 // @grant           none
 // @require         https://greasyfork.org/scripts/24851-wazewrap/code/WazeWrap.js
@@ -29,7 +29,7 @@ const ALERT_UPDATE = true,
     SCRIPT_NAME = GM_info.script.name.replace('(beta)', 'β'),
     SCRIPT_VERSION = GM_info.script.version,
     SCRIPT_VERSION_CHANGES = [
-        '<b>NEW:</b> Fix WME bug by forcing WME to clean its HN object array when exiting house numbers mode, thus preventing WME from wasting rousources by growing the array astonishingly large.',
+        '<b>NEW:</b> Fix WME bug by forcing WME to clean its HN object array when exiting house numbers mode, thus preventing WME from growing the array astonishingly large, wasting resources.',
         '<b>NEW:</b> Multiple new functions to aide in the bugfixes named below.',
         '<b>CHANGE:</b> Allow HNs to be drawn concurrently with other map features. (MUCH faster)',
         '<b>CHANGE:</b> WazeWrap.Requires.Icon class used now instead of injecting my own OpenLayers.Icon class.',
@@ -507,7 +507,6 @@ function preventProcess() {
         destroyAllHNs();
         return true;
     }
-    logDebug('preventProcess end');
     return false;
 }
 
@@ -593,7 +592,6 @@ function objectsChangedHNs(evt) {
     if ((evt.length === 1) && evt[0].getSegmentId() && (_segmentsToProcess.indexOf(evt[0].getSegmentId()) === -1))
         _segmentsToProcess.push(evt[0].getSegmentId());
     checkMarkersEvents();
-    logDebug('objectsChangedHNs end');
 }
 
 function objectsStateDeletedHNs(evt) {
