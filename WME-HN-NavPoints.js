@@ -3,7 +3,7 @@
 // @name            WME HN NavPoints
 // @namespace       https://greasyfork.org/users/166843
 // @description     Shows navigation points of all house numbers in WME
-// @version         2021.07.28.01
+// @version         2021.08.26.01
 // @author          dBsooner
 // @grant           none
 // @require         https://greasyfork.org/scripts/24851-wazewrap/code/WazeWrap.js
@@ -29,15 +29,7 @@ const ALERT_UPDATE = true,
     SCRIPT_NAME = GM_info.script.name.replace('(beta)', 'β'),
     SCRIPT_VERSION = GM_info.script.version,
     SCRIPT_VERSION_CHANGES = [
-        '<b>NEW:</b> Fix WME bug by forcing WME to clean its HN object array when exiting house numbers mode, thus preventing WME from growing the array astonishingly large, wasting resources.',
-        '<b>NEW:</b> Multiple new functions to aide in the bugfixes named below.',
-        '<b>CHANGE:</b> Allow HNs to be drawn concurrently with other map features. (MUCH faster)',
-        '<b>CHANGE:</b> WazeWrap.Requires.Icon class used now instead of injecting my own OpenLayers.Icon class.',
-        '<b>CHANGE:</b> Less data stored within HNs and Lines objects.',
-        '<b>CHANGE:</b> Now using the new WME font for HNs.',
-        '<b>BUGFIX:</b> Clicking the reload / refresh icon in WME would not clear HNs or Lines in some instances.',
-        '<b>BUGFIX:</b> HNs and Lines were either removed, not removed or were multiplied (multiple numbers and lines for same HN) in certain situations.',
-        '<b>BUGFIX:</b> Selecting a house number input field would not remove the HN or Line in certain situations.'
+        '<b>CHANGE:</b> Update zoom levels to new WME numbers.'
     ],
     SETTINGS_STORE_NAME = 'WMEHNNavPoints',
     _spinners = {
@@ -83,7 +75,7 @@ function logDebug(message) {
 
 async function loadSettingsFromStorage() {
     const defaultSettings = {
-            disableBelowZoom: 5,
+            disableBelowZoom: 17,
             enableTooltip: true,
             hnLines: true,
             hnNumbers: true,
@@ -98,6 +90,33 @@ async function loadSettingsFromStorage() {
     const serverSettings = await WazeWrap.Remote.RetrieveSettings(SETTINGS_STORE_NAME);
     if (serverSettings && (serverSettings.lastSaved > _settings.lastSaved))
         $.extend(_settings, serverSettings);
+    if (_settings.disableBelowZoom < 11) {
+        switch (_settings.disableBelowZoom) {
+            case 4:
+                _settings.disableBelowZoom = 18;
+                break;
+            case 5:
+                _settings.disableBelowZoom = 17;
+                break;
+            case 6:
+                _settings.disableBelowZoom = 16;
+                break;
+            case 7:
+                _settings.disableBelowZoom = 15;
+                break;
+            case 8:
+                _settings.disableBelowZoom = 14;
+                break;
+            case 9:
+                _settings.disableBelowZoom = 13;
+                break;
+            case 10:
+                _settings.disableBelowZoom = 12;
+                break;
+            default:
+                _settings.disableBelowZoom = 17;
+        }
+    }
     _timeouts.saveSettingsToStorage = window.setTimeout(saveSettingsToStorage, 5000);
 
     return Promise.resolve();
@@ -762,7 +781,7 @@ function enterHNEditMode(evt) {
 }
 
 function showTooltip(evt) {
-    if ((W.map.getZoom() < 6) || W.editingMediator.attributes.editingHouseNumbers || !_settings.enableTooltip)
+    if ((W.map.getZoom() < 16) || W.editingMediator.attributes.editingHouseNumbers || !_settings.enableTooltip)
         return;
     if (evt && evt.object && evt.object.featureId) {
     /* 2020.07.16.01 - See note at top
@@ -952,7 +971,7 @@ async function init() {
         }
         htmlOut += '"><h4>WME HN NavPoints</h4>'
             + '<div style="font-size:12px; margin-left:6px;">'
-            + '<div style="margin-bottom:5px;" title="Disable NavPoints and house numbers when zoom level is less than specified number.\r\nMinimum: 4\r\nDefault: 5">'
+            + '<div style="margin-bottom:5px;" title="Disable NavPoints and house numbers when zoom level is less than specified number.\r\nMinimum: 18\r\nDefault: 17">'
             + `Disable when zoom level <<input type="text" id="HNNavPoints_disableBelowZoom" style="width:24px; height:20px; margin-left:4px;" value="${_settings.disableBelowZoom}"></input></div>`
             + `<input type="checkbox" style="margin-top:1px;" id="HNNavPoints_cbenableTooltip" title="Enable tooltip when mousing over house numbers."${(_settings.enableTooltip ? ' checked' : '')}>`
             + '     <label for="HNNavPoints_cbenableTooltip" style="font-weight:normal; vertical-align:top"'
@@ -972,8 +991,8 @@ async function init() {
         return htmlOut;
     });
     $('#HNNavPoints_disableBelowZoom').on('change', function () {
-        const newVal = Math.min(10, Math.max(4, parseInt(this.value)));
-        if (newVal !== _settings.disableBelowZoom) {
+        const newVal = Math.max(16, Math.min(22, parseInt(this.value)));
+        if ((newVal !== _settings.disableBelowZoom) || (this.value !== newVal)) {
             if (newVal !== parseInt(this.value))
                 this.value = newVal;
             _settings.disableBelowZoom = newVal;
