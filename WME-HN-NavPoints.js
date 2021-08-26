@@ -91,31 +91,10 @@ async function loadSettingsFromStorage() {
     if (serverSettings && (serverSettings.lastSaved > _settings.lastSaved))
         $.extend(_settings, serverSettings);
     if (_settings.disableBelowZoom < 11) {
-        switch (_settings.disableBelowZoom) {
-            case 4:
-                _settings.disableBelowZoom = 18;
-                break;
-            case 5:
-                _settings.disableBelowZoom = 17;
-                break;
-            case 6:
-                _settings.disableBelowZoom = 16;
-                break;
-            case 7:
-                _settings.disableBelowZoom = 15;
-                break;
-            case 8:
-                _settings.disableBelowZoom = 14;
-                break;
-            case 9:
-                _settings.disableBelowZoom = 13;
-                break;
-            case 10:
-                _settings.disableBelowZoom = 12;
-                break;
-            default:
-                _settings.disableBelowZoom = 17;
-        }
+        const newZoomLevels = {
+            0: 22, 1: 21, 2: 20, 3: 19, 4: 18, 5: 17, 6: 16, 7: 15, 8: 14, 9: 13, 10: 12
+        };
+        _settings.disableBelowZoom = newZoomLevels[_settings.disableBelowZoom];
     }
     _timeouts.saveSettingsToStorage = window.setTimeout(saveSettingsToStorage, 5000);
 
