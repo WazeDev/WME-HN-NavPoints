@@ -3,7 +3,7 @@
 // @name            WME HN NavPoints (beta)
 // @namespace       https://greasyfork.org/users/166843
 // @description     Shows navigation points of all house numbers in WME
-// @version         2021.08.26.01
+// @version         2021.08.26.02
 // @author          dBsooner
 // @grant           none
 // @require         https://greasyfork.org/scripts/24851-wazewrap/code/WazeWrap.js
@@ -90,12 +90,8 @@ async function loadSettingsFromStorage() {
     const serverSettings = await WazeWrap.Remote.RetrieveSettings(SETTINGS_STORE_NAME);
     if (serverSettings && (serverSettings.lastSaved > _settings.lastSaved))
         $.extend(_settings, serverSettings);
-    if (_settings.disableBelowZoom < 11) {
-        const newZoomLevels = {
-            0: 22, 1: 21, 2: 20, 3: 19, 4: 18, 5: 17, 6: 16, 7: 15, 8: 14, 9: 13, 10: 12
-        };
-        _settings.disableBelowZoom = newZoomLevels[_settings.disableBelowZoom];
-    }
+    if (_settings.disableBelowZoom < 11)
+        _settings.disableBelowZoom += 12;
     _timeouts.saveSettingsToStorage = window.setTimeout(saveSettingsToStorage, 5000);
 
     return Promise.resolve();
@@ -950,7 +946,7 @@ async function init() {
         }
         htmlOut += '"><h4>WME HN NavPoints</h4>'
             + '<div style="font-size:12px; margin-left:6px;">'
-            + '<div style="margin-bottom:5px;" title="Disable NavPoints and house numbers when zoom level is less than specified number.\r\nMinimum: 18\r\nDefault: 17">'
+            + '<div style="margin-bottom:5px;" title="Disable NavPoints and house numbers when zoom level is less than specified number.\r\nMinimum: 16\r\nDefault: 17">'
             + `Disable when zoom level <<input type="text" id="HNNavPoints_disableBelowZoom" style="width:24px; height:20px; margin-left:4px;" value="${_settings.disableBelowZoom}"></input></div>`
             + `<input type="checkbox" style="margin-top:1px;" id="HNNavPoints_cbenableTooltip" title="Enable tooltip when mousing over house numbers."${(_settings.enableTooltip ? ' checked' : '')}>`
             + '     <label for="HNNavPoints_cbenableTooltip" style="font-weight:normal; vertical-align:top"'
@@ -970,7 +966,7 @@ async function init() {
         return htmlOut;
     });
     $('#HNNavPoints_disableBelowZoom').on('change', function () {
-        const newVal = Math.max(16, Math.min(22, parseInt(this.value)));
+        const newVal = Math.min(22, Math.max(16, parseInt(this.value)));
         if ((newVal !== _settings.disableBelowZoom) || (this.value !== newVal)) {
             if (newVal !== parseInt(this.value))
                 this.value = newVal;
