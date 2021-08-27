@@ -24,7 +24,7 @@
 const ALERT_UPDATE = true,
     DEBUG = false,
     LOAD_BEGIN_TIME = performance.now(),
-    SCRIPT_FORUM_URL = 'https://www.waze.com/forum/viewtopic.php?f=819&t=289116',
+    SCRIPT_FORUM_URL = 'https://www.waze.com/forum/viewtopic.php?f=819&t=269397',
     SCRIPT_GF_URL = 'https://greasyfork.org/en/scripts/390565-wme-hn-navpoints',
     SCRIPT_NAME = GM_info.script.name.replace('(beta)', 'β'),
     SCRIPT_VERSION = GM_info.script.version,
