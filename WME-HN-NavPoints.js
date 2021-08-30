@@ -3,7 +3,7 @@
 // @name            WME HN NavPoints (beta)
 // @namespace       https://greasyfork.org/users/166843
 // @description     Shows navigation points of all house numbers in WME
-// @version         2021.08.26.02
+// @version         2021.08.30.01
 // @author          dBsooner
 // @grant           none
 // @require         https://greasyfork.org/scripts/24851-wazewrap/code/WazeWrap.js
@@ -24,12 +24,13 @@
 const ALERT_UPDATE = true,
     DEBUG = true,
     LOAD_BEGIN_TIME = performance.now(),
-    SCRIPT_FORUM_URL = 'https://www.waze.com/forum/viewtopic.php?f=819&t=289116',
+    SCRIPT_FORUM_URL = 'https://www.waze.com/forum/viewtopic.php?f=819&t=269397',
     SCRIPT_GF_URL = 'https://greasyfork.org/en/scripts/390565-wme-hn-navpoints',
     SCRIPT_NAME = GM_info.script.name.replace('(beta)', 'β'),
     SCRIPT_VERSION = GM_info.script.version,
     SCRIPT_VERSION_CHANGES = [
-        '<b>CHANGE:</b> Update zoom levels to new WME numbers.'
+        '<b>CHANGE:</b> Update zoom levels to new WME numbers.',
+        '<b>BUGFIX:</b> Changed forum post URL.'
     ],
     SETTINGS_STORE_NAME = 'WMEHNNavPoints',
     _spinners = {
