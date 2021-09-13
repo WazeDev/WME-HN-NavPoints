@@ -3,7 +3,7 @@
 // @name            WME HN NavPoints (beta)
 // @namespace       https://greasyfork.org/users/166843
 // @description     Shows navigation points of all house numbers in WME
-// @version         2021.09.09.01
+// @version         2021.09.13.01
 // @author          dBsooner
 // @grant           none
 // @require         https://greasyfork.org/scripts/24851-wazewrap/code/WazeWrap.js
@@ -29,6 +29,7 @@ const ALERT_UPDATE = true,
     SCRIPT_NAME = GM_info.script.name.replace('(beta)', 'β'),
     SCRIPT_VERSION = GM_info.script.version,
     SCRIPT_VERSION_CHANGES = [
+        '<b>NEW:</b> Auto-select input box when adding a new HN.',
         '<b>BUGFIX:</b> HN and lines not clearing on first click.',
         '<b>BUGFIX:</b> HN and lines not added back if no changes made after deselection.'
     ],
@@ -555,9 +556,17 @@ function markerEvent(evt) {
     else if (evt.type === 'delete') {
         removeHNs([evt.object.model]);
     }
+    else if (evt.type === 'mousedown') {
+        if (evt.target.classList.contains('drag-handle') && evt.data && evt.data.marker && evt.data.marker.model)
+            removeHNs([evt.data.marker.model], true);
+    }
+    else if (evt.type === 'mouseup') {
+        if (evt.target.classList.contains('drag-handle') && (_holdFeatures.hn.length > 0))
+            flushHeldFeatures();
+    }
 }
 
-function setMarkersEvents() {
+function setMarkersEvents(reclick = false, targetNode = undefined) {
     if (W.editingMediator.attributes.editingHouseNumbers) {
         checkTimeout({ timeout: 'setMarkersEvents' });
         hideTooltip();
@@ -569,7 +578,13 @@ function setMarkersEvents() {
             marker.events.unregister('click:input', null, markerEvent);
             marker.events.unregister('delete', null, markerEvent);
             marker.events.on({ 'click:input': markerEvent, delete: markerEvent });
+            $('.drag-handle', marker.icon.div.children[0]).off('mousedown', { marker }, markerEvent).on('mousedown', { marker }, markerEvent);
+            $('.drag-handle', marker.icon.div.children[0]).off('mouseup', { marker }, markerEvent).on('mouseup', { marker }, markerEvent);
         });
+        if (reclick) {
+            const tmpNode = $('input.number', targetNode)[0];
+            $(tmpNode).selectRange(tmpNode.selectionStart).click();
+        }
     }
     else if (_wmeHnLayer) {
         _wmeHnLayer.markers.forEach(marker => {
@@ -579,14 +594,18 @@ function setMarkersEvents() {
     }
 }
 
-function checkMarkersEvents(retry = false, tries = 0) {
+function checkMarkersEvents(retry = false, tries = 0, reclick, targetNode) {
     checkTimeout({ timeout: 'checkMarkersEvents' });
-    if (_wmeHnLayer && (_wmeHnLayer.markers.length > 0) && !_wmeHnLayer.markers[0].events.listeners['click:input'].some(callbackFn => callbackFn.func === markerEvent))
-        setMarkersEvents();
-    else if (retry && (tries < 50))
-        _timeouts.checkMarkersEvents = window.setTimeout(checkMarkersEvents, 100, true, ++tries);
-    else if (retry)
+    if (_wmeHnLayer && (_wmeHnLayer.markers.length > 0)) {
+        if (!_wmeHnLayer.markers[0].events.listeners['click:input'].some(callbackFn => callbackFn.func === markerEvent))
+            setMarkersEvents(reclick, targetNode);
+    }
+    else if (retry && (tries < 50)) {
+        _timeouts.checkMarkersEvents = window.setTimeout(checkMarkersEvents, 100, true, ++tries, reclick, targetNode);
+    }
+    else if (retry) {
         logError('Timeout (5 sec) exceeded waiting for markers to popuplate within checkMarkersEvents');
+    }
 }
 
 function segmentsEvent(evt) {
@@ -717,9 +736,13 @@ function initBackgroundTasks(status) {
                 if (mutation.type === 'attributes') {
                     if ((mutation.oldValue.indexOf('active') > -1) && (_holdFeatures.hn.length > 0) && ($('.active', _wmeHnLayer.div).length === 0))
                         flushHeldFeatures();
-                    const input = $('div.olLayerDiv.house-numbers-layer div.house-number div.content.active:not(".new") input.number');
-                    if (input.val() === '')
-                        input[0].addEventListener('change', setMarkersEvents);
+                    if ((mutation.oldValue.indexOf('active') === -1) && mutation.target.classList.contains('active'))
+                        checkMarkersEvents(true, 0, true, mutation.target);
+                    const $input = $('div.olLayerDiv.house-numbers-layer div.house-number div.content.active:not(".new") input.number');
+                    if ($input.val() === '') {
+                        $input[0].addEventListener('change', setMarkersEvents);
+                        $input.select();
+                    }
                 }
             });
         });
