@@ -3,7 +3,7 @@
 // @name            WME HN NavPoints (beta)
 // @namespace       https://greasyfork.org/users/166843
 // @description     Shows navigation points of all house numbers in WME
-// @version         2021.09.13.01
+// @version         2021.09.14.01
 // @author          dBsooner
 // @grant           none
 // @require         https://greasyfork.org/scripts/24851-wazewrap/code/WazeWrap.js
@@ -571,7 +571,7 @@ function setMarkersEvents(reclick = false, targetNode = undefined) {
         checkTimeout({ timeout: 'setMarkersEvents' });
         hideTooltip();
         if (!_wmeHnLayer || (_wmeHnLayer && (_wmeHnLayer.markers.length === 0))) {
-            _timeouts.setMarkersEvents = window.setTimeout(setMarkersEvents, 50);
+            _timeouts.setMarkersEvents = window.setTimeout(setMarkersEvents, 50, reclick, targetNode);
             return;
         }
         _wmeHnLayer.markers.forEach(marker => {
@@ -739,10 +739,8 @@ function initBackgroundTasks(status) {
                     if ((mutation.oldValue.indexOf('active') === -1) && mutation.target.classList.contains('active'))
                         checkMarkersEvents(true, 0, true, mutation.target);
                     const $input = $('div.olLayerDiv.house-numbers-layer div.house-number div.content.active:not(".new") input.number');
-                    if ($input.val() === '') {
-                        $input[0].addEventListener('change', setMarkersEvents);
-                        $input.select();
-                    }
+                    if ($input.val() === '')
+                        $input.on('change', () => { setMarkersEvents(); }).select();
                 }
             });
         });
