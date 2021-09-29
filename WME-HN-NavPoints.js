@@ -3,7 +3,7 @@
 // @name            WME HN NavPoints
 // @namespace       https://greasyfork.org/users/166843
 // @description     Shows navigation points of all house numbers in WME
-// @version         2021.08.30.01
+// @version         2021.09.14.01
 // @author          dBsooner
 // @grant           none
 // @require         https://greasyfork.org/scripts/24851-wazewrap/code/WazeWrap.js
@@ -29,8 +29,9 @@ const ALERT_UPDATE = true,
     SCRIPT_NAME = GM_info.script.name.replace('(beta)', 'β'),
     SCRIPT_VERSION = GM_info.script.version,
     SCRIPT_VERSION_CHANGES = [
-        '<b>CHANGE:</b> Update zoom levels to new WME numbers.',
-        '<b>BUGFIX:</b> Changed forum post URL.'
+        '<b>NEW:</b> Auto-select input box when adding a new HN.',
+        '<b>BUGFIX:</b> HN and lines not clearing on first click.',
+        '<b>BUGFIX:</b> HN and lines not added back if no changes made after deselection.'
     ],
     SETTINGS_STORE_NAME = 'WMEHNNavPoints',
     _spinners = {
@@ -42,7 +43,12 @@ const ALERT_UPDATE = true,
         bootstrap: undefined,
         hideTooltip: undefined,
         saveSettingsToStorage: undefined,
-        setMarkersEvents: undefined
+        setMarkersEvents: undefined,
+        checkMarkersEvents: undefined
+    },
+    _holdFeatures = {
+        hn: [],
+        lines: []
     };
 
 let _settings = {},
@@ -202,14 +208,14 @@ function doSpinner(spinnerName = '', spin = true) {
     }
 }
 
-function processSegmentsToRemove() {
+function processSegmentsToRemove(force = false) {
     if (_segmentsToRemove.length > 0) {
         const removeMarker = marker => { _HNNavPointsNumbersLayer.removeMarker(marker); };
         let linesToRemove = [],
             hnsToRemove = [];
         for (let i = _segmentsToRemove.length - 1; i > -1; i--) {
             const segId = _segmentsToRemove[i];
-            if (!W.model.segments.objects[segId]) {
+            if (!W.model.segments.objects[segId] || force) {
                 _segmentsToRemove.splice(i, 1);
                 linesToRemove = linesToRemove.concat(_HNNavPointsLayer.getFeaturesByAttribute('segmentId', segId));
                 if (!_settings.enableTooltip)
@@ -256,7 +262,9 @@ async function hnNumbersLayerToggled(checked) {
 function observeHNLayer() {
     if (W.editingMediator.attributes.editingHouseNumbers && !_HNLayerObserver.observing) {
         [_wmeHnLayer] = W.map.getLayersByName('houseNumberMarkers');
-        _HNLayerObserver.observe(_wmeHnLayer.div, { childList: false, subtree: true, attributes: true });
+        _HNLayerObserver.observe(_wmeHnLayer.div, {
+            childList: false, subtree: true, attributes: true, attributeOldValue: true
+        });
         _HNLayerObserver.observing = true;
     }
     else if (_HNLayerObserver.observing) {
@@ -265,8 +273,11 @@ function observeHNLayer() {
     }
     if (!_HNLayerObserver.observing) {
         W.model.segmentHouseNumbers.clear();
+        const holdSegmentsToRemove = [..._segmentsToRemove];
+        _segmentsToRemove = _segmentsToRemove.concat([..._segmentsToProcess]);
+        processSegmentsToRemove(true);
+        _segmentsToRemove = [...holdSegmentsToRemove];
         processSegs('exithousenumbers', W.model.segments.getByIds(_segmentsToProcess), true);
-        processSegmentsToRemove();
         _wmeHnLayer = undefined;
     }
     else {
@@ -279,15 +290,41 @@ function observeHNLayer() {
     });
 }
 
-function removeHNs(objArr) {
+function flushHeldFeatures() {
+    if (_holdFeatures.hn.length === 0)
+        return;
+    if (_HNNavPointsLayer.getFeaturesByAttribute('featureId', _holdFeatures.hn[0].attributes.featureId).length === 0) {
+        if (_settings.enableTooltip)
+            _HNNavPointsNumbersLayer.addMarker(_holdFeatures.hn);
+        else
+            _HNNavPointsNumbersLayer.addFeatures(_holdFeatures.hn);
+        _HNNavPointsLayer.addFeatures(_holdFeatures.lines);
+    }
+    _holdFeatures.hn = [];
+    _holdFeatures.lines = [];
+}
+
+function removeHNs(objArr, holdFeatures = false) {
     let linesToRemove = [],
         hnsToRemove = [];
+    if (_holdFeatures.hn.length > 0)
+        flushHeldFeatures();
     objArr.forEach(hnObj => {
         linesToRemove = linesToRemove.concat(_HNNavPointsLayer.getFeaturesByAttribute('featureId', hnObj.attributes.id));
-        if (!_settings.enableTooltip)
+        if (holdFeatures)
+            _holdFeatures.lines = _HNNavPointsLayer.getFeaturesByAttribute('featureId', hnObj.attributes.id);
+        if (!_settings.enableTooltip) {
             hnsToRemove = hnsToRemove.concat(_HNNavPointsNumbersLayer.getFeaturesByAttribute('featureId', hnObj.attributes.id));
-        else
-            _HNNavPointsNumbersLayer.markers.filter(a => a.featureId === hnObj.attributes.id).forEach(marker => { _HNNavPointsNumbersLayer.removeMarker(marker); });
+            if (holdFeatures)
+                _holdFeatures.hn = _HNNavPointsNumbersLayer.getFeaturesByAttribute('featureId', hnObj.attributes.id);
+        }
+        else {
+            _HNNavPointsNumbersLayer.markers.filter(a => a.featureId === hnObj.attributes.id).forEach(marker => {
+                if (holdFeatures)
+                    _holdFeatures.hn = marker;
+                _HNNavPointsNumbersLayer.removeMarker(marker);
+            });
+        }
     });
     if (linesToRemove.length > 0)
         _HNNavPointsLayer.removeFeatures(linesToRemove);
@@ -373,6 +410,10 @@ function drawHNs(houseNumberArr) {
                 numberFeatures.push(new OpenLayers.Feature.Vector(new OpenLayers.Geometry.Polygon.createRegularPolygon(p2, 1, 20), {
                     segmentId, featureId, hn_number: hnObj.getNumber(), strokeWidth: 3, Color: strokeColor, textDir
                 }));
+            }
+            if ((_holdFeatures.hn.length > 0) && (_holdFeatures.hn.map(a => a.attributes.featureId).indexOf(featureId) > -1)) {
+                _holdFeatures.hn = [];
+                _holdFeatures.lines = [];
             }
         }
     }
@@ -510,26 +551,40 @@ function markerEvent(evt) {
         return;
     if (evt.type === 'click:input') {
         if (evt.object && evt.object.dragging && !evt.object.dragging.last)
-            removeHNs([evt.object.model]);
+            removeHNs([evt.object.model], true);
     }
     else if (evt.type === 'delete') {
         removeHNs([evt.object.model]);
     }
+    else if (evt.type === 'mousedown') {
+        if (evt.target.classList.contains('drag-handle') && evt.data && evt.data.marker && evt.data.marker.model)
+            removeHNs([evt.data.marker.model], true);
+    }
+    else if (evt.type === 'mouseup') {
+        if (evt.target.classList.contains('drag-handle') && (_holdFeatures.hn.length > 0))
+            flushHeldFeatures();
+    }
 }
 
-function setMarkersEvents() {
+function setMarkersEvents(reclick = false, targetNode = undefined) {
     if (W.editingMediator.attributes.editingHouseNumbers) {
         checkTimeout({ timeout: 'setMarkersEvents' });
         hideTooltip();
         if (!_wmeHnLayer || (_wmeHnLayer && (_wmeHnLayer.markers.length === 0))) {
-            _timeouts.setMarkersEvents = window.setTimeout(setMarkersEvents, 50);
+            _timeouts.setMarkersEvents = window.setTimeout(setMarkersEvents, 50, reclick, targetNode);
             return;
         }
         _wmeHnLayer.markers.forEach(marker => {
             marker.events.unregister('click:input', null, markerEvent);
             marker.events.unregister('delete', null, markerEvent);
             marker.events.on({ 'click:input': markerEvent, delete: markerEvent });
+            $('.drag-handle', marker.icon.div.children[0]).off('mousedown', { marker }, markerEvent).on('mousedown', { marker }, markerEvent);
+            $('.drag-handle', marker.icon.div.children[0]).off('mouseup', { marker }, markerEvent).on('mouseup', { marker }, markerEvent);
         });
+        if (reclick) {
+            const tmpNode = $('input.number', targetNode)[0];
+            $(tmpNode).selectRange(tmpNode.selectionStart).click();
+        }
     }
     else if (_wmeHnLayer) {
         _wmeHnLayer.markers.forEach(marker => {
@@ -539,9 +594,18 @@ function setMarkersEvents() {
     }
 }
 
-function checkMarkersEvents() {
-    if (_wmeHnLayer && (_wmeHnLayer.markers.length > 0) && !_wmeHnLayer.markers[0].events.listeners['click:input'].some(callbackFn => callbackFn.func === markerEvent))
-        setMarkersEvents();
+function checkMarkersEvents(retry = false, tries = 0, reclick, targetNode) {
+    checkTimeout({ timeout: 'checkMarkersEvents' });
+    if (_wmeHnLayer && (_wmeHnLayer.markers.length > 0)) {
+        if (!_wmeHnLayer.markers[0].events.listeners['click:input'].some(callbackFn => callbackFn.func === markerEvent))
+            setMarkersEvents(reclick, targetNode);
+    }
+    else if (retry && (tries < 50)) {
+        _timeouts.checkMarkersEvents = window.setTimeout(checkMarkersEvents, 100, true, ++tries, reclick, targetNode);
+    }
+    else if (retry) {
+        logError('Timeout (5 sec) exceeded waiting for markers to popuplate within checkMarkersEvents');
+    }
 }
 
 function segmentsEvent(evt) {
@@ -603,7 +667,7 @@ function objectsAddedHNs(evt) {
         return;
     if ((evt.length === 1) && evt[0].getSegmentId() && (_segmentsToProcess.indexOf(evt[0].getSegmentId()) === -1))
         _segmentsToProcess.push(evt[0].getSegmentId());
-    checkMarkersEvents();
+    checkMarkersEvents(true, 0);
 }
 
 function zoomEndEvent() {
@@ -625,7 +689,7 @@ function afterActionsEvent(evt) {
         if (evt.type === 'afterundoaction')
             drawHNs([evt.action.object]);
         else
-            removeHNs(evt.action.object);
+            removeHNs([evt.action.object]);
         setMarkersEvents();
     }
     else if (evt.action._description && (evt.action._description.indexOf('Updated house number') > -1)) {
@@ -638,13 +702,13 @@ function afterActionsEvent(evt) {
             if (tempEvt.action.oldAttributes && tempEvt.action.oldAttributes.number)
                 tempEvt.action.attributes.number = tempEvt.action.oldAttributes.number;
         }
-        removeHNs(tempEvt.action.object);
+        removeHNs([tempEvt.action.object]);
         drawHNs([evt.action.object]);
         setMarkersEvents();
     }
     else if (evt.action._description && (evt.action._description.indexOf('Added house number') > -1)) {
         if (evt.type === 'afterundoaction')
-            removeHNs(evt.action.houseNumber);
+            removeHNs([evt.action.houseNumber]);
         else
             drawHNs([evt.action.houseNumber]);
     }
@@ -668,10 +732,16 @@ async function reloadClicked() {
 function initBackgroundTasks(status) {
     if (status === 'enable') {
         _HNLayerObserver = new MutationObserver(mutationsList => {
-            mutationsList.forEach(() => {
-                const input = $('div.olLayerDiv.house-numbers-layer div.house-number div.content.active:not(".new") input.number');
-                if (input.val() === '')
-                    input[0].addEventListener('change', setMarkersEvents);
+            mutationsList.forEach(mutation => {
+                if (mutation.type === 'attributes') {
+                    if ((mutation.oldValue.indexOf('active') > -1) && (_holdFeatures.hn.length > 0) && ($('.active', _wmeHnLayer.div).length === 0))
+                        flushHeldFeatures();
+                    if ((mutation.oldValue.indexOf('active') === -1) && mutation.target.classList.contains('active'))
+                        checkMarkersEvents(true, 0, true, mutation.target);
+                    const $input = $('div.olLayerDiv.house-numbers-layer div.house-number div.content.active:not(".new") input.number');
+                    if ($input.val() === '')
+                        $input.on('change', () => { setMarkersEvents(); }).select();
+                }
             });
         });
         _saveButtonObserver = new MutationObserver(mutationsList => {
@@ -1026,7 +1096,7 @@ function bootstrap(tries) {
         init();
     }
     else if (tries < 1000) {
-        logDebug(`Bootstrap failed. Retrying ${tries} of 1000`);
+        logDebug(`WME not ready. Retrying ${tries} of 1000`);
         _timeouts.bootstrap = window.setTimeout(bootstrap, 200, ++tries);
     }
     else {
