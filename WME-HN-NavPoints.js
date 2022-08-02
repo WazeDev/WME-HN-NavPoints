@@ -3,7 +3,7 @@
 // @name            WME HN NavPoints (beta)
 // @namespace       https://greasyfork.org/users/166843
 // @description     Shows navigation points of all house numbers in WME
-// @version         2021.09.14.01
+// @version         2022.08.02.01
 // @author          dBsooner
 // @grant           none
 // @require         https://greasyfork.org/scripts/24851-wazewrap/code/WazeWrap.js
@@ -29,9 +29,7 @@ const ALERT_UPDATE = true,
     SCRIPT_NAME = GM_info.script.name.replace('(beta)', 'β'),
     SCRIPT_VERSION = GM_info.script.version,
     SCRIPT_VERSION_CHANGES = [
-        '<b>NEW:</b> Auto-select input box when adding a new HN.',
-        '<b>BUGFIX:</b> HN and lines not clearing on first click.',
-        '<b>BUGFIX:</b> HN and lines not added back if no changes made after deselection.'
+        '<b>BUGFIX:</b> Minor bugixes.'
     ],
     SETTINGS_STORE_NAME = 'WMEHNNavPoints',
     _spinners = {
@@ -583,7 +581,8 @@ function setMarkersEvents(reclick = false, targetNode = undefined) {
         });
         if (reclick) {
             const tmpNode = $('input.number', targetNode)[0];
-            $(tmpNode).selectRange(tmpNode.selectionStart).click();
+            $(tmpNode)[0].focus();
+            $(tmpNode)[0].setSelectionRange(tmpNode.selectionStart, tmpNode.selectionStart);
         }
     }
     else if (_wmeHnLayer) {
@@ -723,7 +722,7 @@ function afterActionsEvent(evt) {
 }
 
 async function reloadClicked() {
-    if (preventProcess() || ($('div.item-icon.w-icon.w-icon-refresh').attr('class').indexOf('disabled') > 0))
+    if (preventProcess() || ($('div.w-icon.w-icon-refresh').attr('class').indexOf('disabled') > 0))
         return;
     await destroyAllHNs();
     processSegs('reload', W.model.segments.getByAttributes({ hasHNs: true }));
@@ -734,9 +733,9 @@ function initBackgroundTasks(status) {
         _HNLayerObserver = new MutationObserver(mutationsList => {
             mutationsList.forEach(mutation => {
                 if (mutation.type === 'attributes') {
-                    if ((mutation.oldValue.indexOf('active') > -1) && (_holdFeatures.hn.length > 0) && ($('.active', _wmeHnLayer.div).length === 0))
+                    if (mutation.oldValue && (mutation.oldValue.indexOf('active') > -1) && (_holdFeatures.hn.length > 0) && ($('.active', _wmeHnLayer.div).length === 0))
                         flushHeldFeatures();
-                    if ((mutation.oldValue.indexOf('active') === -1) && mutation.target.classList.contains('active'))
+                    if (mutation.oldValue && (mutation.oldValue.indexOf('active') === -1) && mutation.target.classList.contains('active'))
                         checkMarkersEvents(true, 0, true, mutation.target);
                     const $input = $('div.olLayerDiv.house-numbers-layer div.house-number div.content.active:not(".new") input.number');
                     if ($input.val() === '')
