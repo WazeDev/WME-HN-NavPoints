@@ -3,7 +3,7 @@
 // @name            WME HN NavPoints (beta)
 // @namespace       https://greasyfork.org/users/166843
 // @description     Shows navigation points of all house numbers in WME
-// @version         2022.08.02.01
+// @version         2022.08.26.01
 // @author          dBsooner
 // @grant           none
 // @require         https://greasyfork.org/scripts/24851-wazewrap/code/WazeWrap.js
@@ -12,7 +12,7 @@
 // @contributionURL https://github.com/WazeDev/Thank-The-Authors
 // ==/UserScript==
 
-/* global _, $, document, GM_info, localStorage, MutationObserver, OpenLayers, performance, W, WazeWrap, window */
+/* global _, $, GM_info, OpenLayers, W, WazeWrap */
 
 /*
  * Original concept and code for WME HN NavPoints was written by MajkiiTelini. After version 0.6.6, this
@@ -406,7 +406,7 @@ function drawHNs(houseNumberArr) {
             else {
                 // eslint-disable-next-line new-cap
                 numberFeatures.push(new OpenLayers.Feature.Vector(new OpenLayers.Geometry.Polygon.createRegularPolygon(p2, 1, 20), {
-                    segmentId, featureId, hn_number: hnObj.getNumber(), strokeWidth: 3, Color: strokeColor, textDir
+                    segmentId, featureId, hNumber: hnObj.getNumber(), strokeWidth: 3, Color: strokeColor, textDir
                 }));
             }
             if ((_holdFeatures.hn.length > 0) && (_holdFeatures.hn.map(a => a.attributes.featureId).indexOf(featureId) > -1)) {
@@ -593,6 +593,7 @@ function setMarkersEvents(reclick = false, targetNode = undefined) {
     }
 }
 
+// eslint-disable-next-line default-param-last
 function checkMarkersEvents(retry = false, tries = 0, reclick, targetNode) {
     checkTimeout({ timeout: 'checkMarkersEvents' });
     if (_wmeHnLayer && (_wmeHnLayer.markers.length > 0)) {
@@ -884,7 +885,7 @@ function showTooltip(evt) {
         $('#hnNavPointsTooltipDiv-arrow').css('left', Math.round(arrowOffset));
         _$hnNavPointsTooltipDiv.attr('x-placement', xPlacement);
         _$hnNavPointsTooltipDiv.css({ visibility: 'visible' });
-        _popup = { segmentId, hn_number: hnNumber, inUse: true };
+        _popup = { segmentId, hNumber: hnNumber, inUse: true };
     }
 }
 
@@ -945,7 +946,7 @@ async function init() {
                 fillColor: '${Color}',
                 fillOpacity: 0.5,
                 pointerEvents: 'visiblePainted',
-                label: '${hn_number}',
+                label: '${hNumber}',
                 fontSize: '12px',
                 fontFamily: 'Rubik, Boing-light, sans-serif;',
                 fontWeight: 'bold',
