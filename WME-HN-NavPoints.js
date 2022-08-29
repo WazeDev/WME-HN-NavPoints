@@ -3,7 +3,7 @@
 // @name            WME HN NavPoints (beta)
 // @namespace       https://greasyfork.org/users/166843
 // @description     Shows navigation points of all house numbers in WME
-// @version         2022.08.26.01
+// @version         2022.08.29.01
 // @author          dBsooner
 // @grant           none
 // @require         https://greasyfork.org/scripts/24851-wazewrap/code/WazeWrap.js
@@ -29,7 +29,7 @@ const ALERT_UPDATE = true,
     SCRIPT_NAME = GM_info.script.name.replace('(beta)', 'β'),
     SCRIPT_VERSION = GM_info.script.version,
     SCRIPT_VERSION_CHANGES = [
-        '<b>BUGFIX:</b> Minor bugixes.'
+        '<b>CHANGE:</b> Mouseover toolip working again.'
     ],
     SETTINGS_STORE_NAME = 'WMEHNNavPoints',
     _spinners = {
@@ -42,7 +42,8 @@ const ALERT_UPDATE = true,
         hideTooltip: undefined,
         saveSettingsToStorage: undefined,
         setMarkersEvents: undefined,
-        checkMarkersEvents: undefined
+        checkMarkersEvents: undefined,
+        stripTooltipHTML: undefined
     },
     _holdFeatures = {
         hn: [],
@@ -847,10 +848,9 @@ function showTooltip(evt) {
             popupPixel = W.map.getPixelFromLonLat(new OpenLayers.LonLat(evt.feature.geometry.getCentroid().x, evt.feature.geometry.getCentroid().y)),
             */
             htmlOut = ''
-                + '<div class="tippy-tooltip light-border-theme" id="hnNavPointsTooltipDiv-tooltip" data-size="large" data-animation="shift-away" data-state="visible"'
-                + '     data-interactive="" style="transition-duration:325ms; top:0px;">'
-                + ' <div class="tippy-arrow" id="hnNavPointsTooltipDiv-arrow" style="left:83px;"></div>'
-                + ' <div class="tippy-content" id="hnNavPointsTooltipDiv-content" data-state="visible" style="transition-duration: 325ms;">'
+                + '<div id="hnNavPointsTooltipDiv-tooltip" class="tippy-box" data-state="hidden" tabindex="-1" data-theme="light-border" data-animation="fade" role="tooltip" data-placement="top" '
+                + '    style="max-width: 350px; transition-duration:300ms;">'
+                + ' <div id="hnNavPointsTooltipDiv-content" class="tippy-content" data-state="hidden" style="transition-duration: 300ms;">'
                 + '     <div>'
                 + '         <div class="house-number-marker-tooltip">'
                 + `             <div class="title" dir="auto">${hnNumber} ${(street ? street.name : '')}</div>`
@@ -858,14 +858,15 @@ function showTooltip(evt) {
                 + '         </div>'
                 + '     </div>'
                 + ' </div>'
+                + ' <div id="hnNavPointsTooltipDiv-arrow" class="tippy-arrow" style="position: absolute; left: 0px;"></div>'
                 + '</div>';
         _$hnNavPointsTooltipDiv.html(htmlOut);
         popupPixel.origX = popupPixel.x;
         const popupWidthHalf = (_$hnNavPointsTooltipDiv.width() / 2);
         let arrowOffset = (popupWidthHalf - 15),
-            xPlacement = 'top',
+            dataPlacement = 'top',
             moveMap = false;
-        popupPixel.x = ((popupPixel.x - popupWidthHalf) > 0) ? (popupPixel.x - popupWidthHalf) : 10;
+        popupPixel.x = ((popupPixel.x - popupWidthHalf + 5) > 0) ? (popupPixel.x - popupWidthHalf + 5) : 10;
         if (popupPixel.x === 10)
             arrowOffset = popupPixel.origX - 22;
         if ((popupPixel.x + (popupWidthHalf * 2)) > $('#map')[0].clientWidth) {
@@ -873,27 +874,33 @@ function showTooltip(evt) {
             arrowOffset = (_$hnNavPointsTooltipDiv.width() - 30);
             moveMap = true;
         }
-        if (popupPixel.y - _$hnNavPointsTooltipDiv.height() < 0) {
-            popupPixel.y += 10;
-            xPlacement = 'bottom';
+        if (popupPixel.y - _$hnNavPointsTooltipDiv.children().toArray().reduce((height, elem) => height + $(elem).outerHeight(true), 0) < 0) {
+            popupPixel.y += 14;
+            dataPlacement = 'bottom';
         }
         else {
-            popupPixel.y -= (_$hnNavPointsTooltipDiv.height() + 4);
+            popupPixel.y -= (_$hnNavPointsTooltipDiv.children().toArray().reduce((height, elem) => height + $(elem).outerHeight(true), 0) + 14);
         }
         $('#hnNavPointsTooltipDiv-edit').on('click', { segment, moveMap }, enterHNEditMode);
-        _$hnNavPointsTooltipDiv.css({ transform: `translate3d(${Math.round(popupPixel.x)}px, ${Math.round(popupPixel.y)}px, 0px)` });
-        $('#hnNavPointsTooltipDiv-arrow').css('left', Math.round(arrowOffset));
-        _$hnNavPointsTooltipDiv.attr('x-placement', xPlacement);
-        _$hnNavPointsTooltipDiv.css({ visibility: 'visible' });
+        _$hnNavPointsTooltipDiv.css({ transform: `translate(${Math.round(popupPixel.x)}px, ${Math.round(popupPixel.y)}px)` });
+        $('#hnNavPointsTooltipDiv-arrow').css({ transform: `translate(${Math.max(0, Math.round(arrowOffset))}px, 0px)` });
+        $('#hnNavPointsTooltipDiv-tooltip').attr('data-placement', dataPlacement).attr('data-state', 'visible');
+        $('#hnNavPointsTooltipDiv-content').attr('data-state', 'visible');
         _popup = { segmentId, hNumber: hnNumber, inUse: true };
     }
 }
 
-function hideTooltip() {
-    checkTimeout({ timeout: 'hideTooltip' });
-    _$hnNavPointsTooltipDiv.css({ visibility: 'hidden' });
+function stripTooltipHTML() {
+    checkTimeout({ timeout: 'stripTooltipHTML' });
     _$hnNavPointsTooltipDiv.html('');
     _popup = { segmentId: -1, hnNumber: -1, inUse: false };
+}
+
+function hideTooltip() {
+    checkTimeout({ timeout: 'hideTooltip' });
+    $('#hnNavPointsTooltipDiv-content').attr('data-state', 'hidden');
+    $('#hnNavPointsTooltipDiv-tooltip').attr('data-state', 'hidden');
+    _timeouts.stripTooltipHTML = window.setTimeout(stripTooltipHTML, 400);
 }
 
 function hideTooltipDelay(evt) {
@@ -1073,8 +1080,8 @@ async function init() {
     });
     if (!_$hnNavPointsTooltipDiv) {
         $('#map').append(
-            '<div id="hnNavPointsTooltipDiv" class="tippy-popper" role="tooltip" x-placement="top" style="z-index:9999; transition-duration:0ms; position:absolute;'
-            + 'will-change:transform; top:0px; left:0px; visibility:none;"></div>'
+            '<div data-tippy-root id="hnNavPointsTooltipDiv" style="z-index:9999; visibility:visible; position:absolute; inset: auto auto 0px 0px; '
+            + 'margin: 0px; top: 0px; left: 0px;"></div>'
         );
         _$hnNavPointsTooltipDiv = $('#hnNavPointsTooltipDiv');
         _$hnNavPointsTooltipDiv.on('mouseleave', null, hideTooltipDelay);
