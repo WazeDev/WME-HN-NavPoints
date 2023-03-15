@@ -3,12 +3,13 @@
 // @name            WME HN NavPoints (beta)
 // @namespace       https://greasyfork.org/users/166843
 // @description     Shows navigation points of all house numbers in WME
-// @version         2023.03.07.01
+// @version         2023.03.15.01
 // @author          dBsooner
 // @grant           none
 // @require         https://greasyfork.org/scripts/24851-wazewrap/code/WazeWrap.js
 // @license         GPLv3
-// @include         /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor\/?.*$/
+// @match       http*://*.waze.com/*editor*
+// @exclude     http*://*.waze.com/user/editor*
 // @contributionURL https://github.com/WazeDev/Thank-The-Authors
 // ==/UserScript==
 
@@ -33,7 +34,9 @@
         SCRIPT_VERSION = GM_info.script.version,
         SCRIPT_VERSION_CHANGES = ['<b>CHANGE:</b> New bootstrap routine.',
             '<b>CHANGE:</b> Updated code to use optional chaining.',
-            '<b>CHANGE:</b> Code structure with new linter options.'
+            '<b>CHANGE:</b> Code structure with new linter options.',
+            '<b>CHANGE:</b> Code cleanup.',
+            '<b>CHANGE:</b> Utilize @match instead of @include in userscript headers.'
         ],
         SETTINGS_STORE_NAME = 'WMEHNNavPoints',
         _spinners = {
@@ -42,10 +45,11 @@
             processSegs: false
         },
         _timeouts = {
+            checkMarkersEvents: undefined,
             hideTooltip: undefined,
+            onWmeReady: undefined,
             saveSettingsToStorage: undefined,
             setMarkersEvents: undefined,
-            checkMarkersEvents: undefined,
             stripTooltipHTML: undefined
         },
         _holdFeatures = {
@@ -64,10 +68,6 @@
         _segmentsToProcess = [],
         _segmentsToRemove = [],
         _$hnNavPointsTooltipDiv,
-        /* 2020.07.16.01 - Removed in favor of dual layer types: one for Vector (no tooltip popup) and one for marker (tooltip popup).
-       Prior to this it was an attempt to work with several OL SelectFeatures controllers. However, it doesn't seem possible with OL 2.
-     _hnMouseoverCtrl,
-    */
         _popup = {
             inUse: false,
             hnNumber: -1,
@@ -165,13 +165,13 @@
 
     function checkTimeout(obj) {
         if (obj.toIndex) {
-            if (_timeouts[obj.timeout]?.[obj.toIndex] !== undefined) {
+            if (_timeouts[obj.timeout]?.[obj.toIndex]) {
                 window.clearTimeout(_timeouts[obj.timeout][obj.toIndex]);
-                _timeouts[obj.timeout][obj.toIndex] = undefined;
+                delete (_timeouts[obj.timeout][obj.toIndex]);
             }
         }
         else {
-            if (_timeouts[obj.timeout] !== undefined)
+            if (_timeouts[obj.timeout])
                 window.clearTimeout(_timeouts[obj.timeout]);
             _timeouts[obj.timeout] = undefined;
         }
@@ -785,9 +785,6 @@
             WazeWrap.Events.register('afterundoaction', this, afterActionsEvent);
             WazeWrap.Events.register('afteraction', this, afterActionsEvent);
             WazeWrap.Events.register('afterclearactions', this, afterActionsEvent);
-            /* 2020.07.16.01 - See note at top
-        _hnMouseoverCtrl.activate();
-        */
             _scriptActive = true;
         }
         else if (status === 'disable') {
@@ -813,9 +810,6 @@
             W.map.events.unregister('removelayer', null, checkLayerIndex);
             WazeWrap.Events.unregister('afterundoaction', this, afterActionsEvent);
             WazeWrap.Events.unregister('afteraction', this, afterActionsEvent);
-            /* 2020.07.16.01 - See note at top
-        _hnMouseoverCtrl.deactivate();
-        */
             _scriptActive = false;
         }
         return Promise.resolve();
@@ -834,22 +828,13 @@
         if ((W.map.getZoom() < 16) || W.editingMediator.attributes.editingHouseNumbers || !_settings.enableTooltip)
             return;
         if (evt?.object?.featureId) {
-            /* 2020.07.16.01 - See note at top
-    if (evt && evt.feature && evt.feature.attributes && evt.feature.attributes.featureId) {
-    */
             checkTooltip();
-            /* 2020.07.16.01 - See note at top
-        const featureArr = evt.feature.attributes.featureId.split('|'),
-        */
             const { segmentId, hnNumber } = evt.object;
             if (_popup.inUse && (_popup.hnNumber === hnNumber) && (_popup.segmentId === segmentId))
                 return;
             const segment = W.model.segments.getObjectById(segmentId),
                 street = W.model.streets.getObjectById(segment.attributes.primaryStreetID),
                 popupPixel = W.map.getPixelFromLonLat(evt.object.lonlat),
-                /* 2020.07.16.01 - See note at top
-            popupPixel = W.map.getPixelFromLonLat(new OpenLayers.LonLat(evt.feature.geometry.getCentroid().x, evt.feature.geometry.getCentroid().y)),
-            */
                 htmlOut = ''
                 + '<div id="hnNavPointsTooltipDiv-tooltip" class="tippy-box" data-state="hidden" tabindex="-1" data-theme="light-border" data-animation="fade" role="tooltip" data-placement="top" '
                 + '    style="max-width: 350px; transition-duration:300ms;">'
@@ -941,7 +926,7 @@
         }
     }
 
-    async function onWmeReady() {
+    async function onWazeWrapReady() {
         const navPointsNumbersLayersOptions = {
             displayInLayerSwitcher: true,
             uniqueName: '__HNNavPointsNumbersLayer',
@@ -982,20 +967,6 @@
         W.map.addLayers([_HNNavPointsLayer, _HNNavPointsNumbersLayer]);
         _HNNavPointsLayer.setVisibility(_settings.hnLines);
         _HNNavPointsNumbersLayer.setVisibility(_settings.hnNumbers);
-        /* 2020.07.16.01 - See note at top
-    _hnMouseoverCtrl = new OpenLayers.Control.SelectFeature(_HNNavPointsNumbersLayer, {
-        hover: true,
-        highlightOnly: true,
-        renderIntent: 'temporary',
-        eventListeners: {
-            featurehighlighted: showTooltip,
-            featureunhighlighted: hideTooltipDelay
-        }
-    });
-    W.map.addControl(_hnMouseoverCtrl);
-    if (_settings.enableTooltip)
-        _hnMouseoverCtrl.activate();
-    */
         window.addEventListener('beforeunload', () => { checkShortcutsChanged(); }, false);
         new WazeWrap.Interface.Shortcut(
             'toggleHNNavPointsShortcut',
@@ -1099,10 +1070,27 @@
         setTimeout(checkShortcutsChanged, 10000);
     }
 
+    function onWmeReady(tries = 1) {
+        if (typeof tries === 'object')
+            tries = 1;
+        checkTimeout({ timeout: 'onWmeReady' });
+        if (WazeWrap?.Ready) {
+            logDebug('WazeWrap is ready. Proceeding with initialization.');
+            onWazeWrapReady();
+        }
+        else if (tries < 1000) {
+            logDebug(`WazeWrap is not in Ready state. Retrying ${tries} of 1000.`);
+            _timeouts.onWmeReady = window.setTimeout(onWmeReady, 200, ++tries);
+        }
+        else {
+            logError(new Error('onWmeReady timed out waiting for WazeWrap Ready state.'));
+        }
+    }
+
     function onWmeInitialized() {
         if (W.userscripts?.state?.isReady) {
             logDebug('W is ready and already in "wme-ready" state. Proceeding with initialization.');
-            onWmeReady();
+            onWmeReady(1);
         }
         else {
             logDebug('W is ready, but state is not "wme-ready". Adding event listener.');
