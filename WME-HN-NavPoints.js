@@ -8,8 +8,8 @@
 // @grant           none
 // @require         https://greasyfork.org/scripts/24851-wazewrap/code/WazeWrap.js
 // @license         GPLv3
-// @match       http*://*.waze.com/*editor*
-// @exclude     http*://*.waze.com/user/editor*
+// @match           http*://*.waze.com/*editor*
+// @exclude         http*://*.waze.com/user/editor*
 // @contributionURL https://github.com/WazeDev/Thank-The-Authors
 // ==/UserScript==
 
