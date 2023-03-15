@@ -1,4 +1,3 @@
-/* eslint-disable no-template-curly-in-string */
 // ==UserScript==
 // @name            WME HN NavPoints (beta)
 // @namespace       https://greasyfork.org/users/166843

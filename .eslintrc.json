@@ -29,6 +29,7 @@
         "no-promise-executor-return": "off",
         "no-prototype-builtins": "off",
         "no-restricted-globals": "off",
+        "no-template-curly-in-string": "off",
         "no-underscore-dangle": "off",
         "no-use-before-define": ["error", "nofunc"],
         "nonblock-statement-body-position": ["error", "below"],
