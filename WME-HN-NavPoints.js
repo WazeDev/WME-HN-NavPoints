@@ -1,10 +1,11 @@
 // ==UserScript==
-// @name            WME HN NavPoints
+// @name            WME HN NavPoints (beta)
 // @namespace       https://greasyfork.org/users/166843
 // @description     Shows navigation points of all house numbers in WME
-// @version         2023.03.15.01
+// @version         2023.04.19.01
 // @author          dBsooner
-// @grant           none
+// @grant           GM_xmlhttpRequest
+// @connect         greasyfork.org
 // @require         https://greasyfork.org/scripts/24851-wazewrap/code/WazeWrap.js
 // @license         GPLv3
 // @match           http*://*.waze.com/*editor*
@@ -12,7 +13,7 @@
 // @contributionURL https://github.com/WazeDev/Thank-The-Authors
 // ==/UserScript==
 
-/* global _, $, GM_info, OpenLayers, W, WazeWrap */
+/* global _, $, GM_info, GM_xmlhttpRequest, OpenLayers, W, WazeWrap */
 
 /*
  * Original concept and code for WME HN NavPoints was written by MajkiiTelini. After version 0.6.6, this
@@ -24,20 +25,25 @@
 (function () {
     'use strict';
 
-    const ALERT_UPDATE = true,
-        DEBUG = false,
-        LOAD_BEGIN_TIME = performance.now(),
-        SCRIPT_FORUM_URL = 'https://www.waze.com/forum/viewtopic.php?f=819&t=269397',
-        SCRIPT_GF_URL = 'https://greasyfork.org/en/scripts/390565-wme-hn-navpoints',
-        SCRIPT_NAME = GM_info.script.name.replace('(beta)', 'β'),
-        SCRIPT_VERSION = GM_info.script.version,
-        SCRIPT_VERSION_CHANGES = ['<b>CHANGE:</b> New bootstrap routine.',
-            '<b>CHANGE:</b> Updated code to use optional chaining.',
-            '<b>CHANGE:</b> Code structure with new linter options.',
-            '<b>CHANGE:</b> Code cleanup.',
-            '<b>CHANGE:</b> Utilize @match instead of @include in userscript headers.'
+    // eslint-disable-next-line no-nested-ternary
+    const _SCRIPT_SHORT_NAME = `HN NavPoints${(/beta/.test(GM_info.script.name) ? ' β' : /\(DEV\)/i.test(GM_info.script.name) ? ' Ω' : '')}`,
+        _SCRIPT_LONG_NAME = GM_info.script.name,
+        _IS_ALPHA_VERSION = /[Ω]/.test(_SCRIPT_SHORT_NAME),
+        _IS_BETA_VERSION = /[β]/.test(_SCRIPT_SHORT_NAME),
+        _PROD_URL = 'https://greasyfork.org/scripts/390565-wme-hn-navpoints/code/WME%20HN%20NavPoints.user.js',
+        _PROD_META_URL = 'https://greasyfork.org/scripts/390565-wme-hn-navpoints/code/WME%20HN%20NavPoints.meta.js',
+        _FORUM_URL = 'https://www.waze.com/forum/viewtopic.php?f=819&t=269397',
+        _SETTINGS_STORE_NAME = 'WMEHNNavPoints',
+        _BETA_URL = 'YUhSMGNITTZMeTluY21WaGMzbG1iM0pyTG05eVp5OXpZM0pwY0hSekx6TTVNRFUzTXkxM2JXVXRhRzR0Ym1GMmNHOXBiblJ6TFdKbGRHRXZZMjlrWlM5WFRVVWxNakJJVGlVeU1FNWhkbEJ2YVc1MGN5VXlNQ2hpWlhSaEtTNTFjMlZ5TG1weg==',
+        _BETA_META_URL = 'YUhSMGNITTZMeTluY21WaGMzbG1iM0pyTG05eVp5OXpZM0pwY0hSekx6TTVNRFUzTXkxM2JXVXRhRzR0Ym1GMmNHOXBiblJ6TFdKbGRHRXZZMjlrWlM5WFRVVWxNakJJVGlVeU1FNWhkbEJ2YVc1MGN5VXlNQ2hpWlhSaEtTNXRaWFJoTG1weg==',
+        _ALERT_UPDATE = true,
+        _SCRIPT_VERSION = GM_info.script.version.toString(),
+        _SCRIPT_VERSION_CHANGES = ['<b>NEW:</b> Check for updated version on load.',
+            '<b>NEW:</b> Moved settings to new HN NavPoints tab.',
+            '<b>CHANGE:</b> WME production now includes function from WME beta.'
         ],
-        SETTINGS_STORE_NAME = 'WMEHNNavPoints',
+        _DEBUG = /[βΩ]/.test(_SCRIPT_SHORT_NAME),
+        _LOAD_BEGIN_TIME = performance.now(),
         _spinners = {
             destroyAllHNs: false,
             drawHNs: false,
@@ -54,7 +60,8 @@
         _holdFeatures = {
             hn: [],
             lines: []
-        };
+        },
+        dec = (s = '') => atob(atob(s));
 
     let _settings = {},
         _scriptActive = false,
@@ -71,14 +78,15 @@
             inUse: false,
             hnNumber: -1,
             segmentId: -1
-        };
+        },
+        _lastVersionChecked = '0';
 
-    function log(message) { console.log('WME-HN-NavPoints:', message); }
-    function logError(message) { console.error('WME-HN-NavPoints:', message); }
-    // function logWarning(message) { console.warn('WME-HN-NavPoints:', message); }
-    function logDebug(message) {
-        if (DEBUG)
-            console.log('WME-HN-NavPoints:', message);
+    function log(message, data = '') { console.log(`${_SCRIPT_SHORT_NAME}:`, message, data); }
+    function logError(message, data = '') { console.error(`${_SCRIPT_SHORT_NAME}:`, new Error(message), data); }
+    // function logWarning(message, data = '') { console.warn(`${_SCRIPT_SHORT_NAME}:`, message, data); }
+    function logDebug(message, data = '') {
+        if (_DEBUG)
+            log(message, data);
     }
 
     async function loadSettingsFromStorage() {
@@ -93,9 +101,9 @@
                 lastSaved: 0,
                 lastVersion: undefined
             },
-            loadedSettings = $.parseJSON(localStorage.getItem(SETTINGS_STORE_NAME));
+            loadedSettings = $.parseJSON(localStorage.getItem(_SETTINGS_STORE_NAME));
         _settings = $.extend({}, defaultSettings, loadedSettings);
-        const serverSettings = await WazeWrap.Remote.RetrieveSettings(SETTINGS_STORE_NAME);
+        const serverSettings = await WazeWrap.Remote.RetrieveSettings(_SETTINGS_STORE_NAME);
         if (serverSettings?.lastSaved > _settings.lastSaved)
             $.extend(_settings, serverSettings);
         if (_settings.disableBelowZoom < 11)
@@ -108,28 +116,28 @@
     function saveSettingsToStorage() {
         checkTimeout({ timeout: 'saveSettingsToStorage' });
         if (localStorage) {
-            _settings.lastVersion = SCRIPT_VERSION;
+            _settings.lastVersion = _SCRIPT_VERSION;
             _settings.lastSaved = Date.now();
-            localStorage.setItem(SETTINGS_STORE_NAME, JSON.stringify(_settings));
-            WazeWrap.Remote.SaveSettings(SETTINGS_STORE_NAME, _settings);
+            localStorage.setItem(_SETTINGS_STORE_NAME, JSON.stringify(_settings));
+            WazeWrap.Remote.SaveSettings(_SETTINGS_STORE_NAME, _settings);
             logDebug('Settings saved.');
         }
     }
 
     function showScriptInfoAlert() {
-        if (ALERT_UPDATE && (SCRIPT_VERSION !== _settings.lastVersion)) {
+        if (_ALERT_UPDATE && (_SCRIPT_VERSION !== _settings.lastVersion)) {
             let releaseNotes = '';
             releaseNotes += '<p>What\'s New:</p>';
-            if (SCRIPT_VERSION_CHANGES.length > 0) {
+            if (_SCRIPT_VERSION_CHANGES.length > 0) {
                 releaseNotes += '<ul>';
-                for (let idx = 0; idx < SCRIPT_VERSION_CHANGES.length; idx++)
-                    releaseNotes += `<li>${SCRIPT_VERSION_CHANGES[idx]}`;
+                for (let idx = 0; idx < _SCRIPT_VERSION_CHANGES.length; idx++)
+                    releaseNotes += `<li>${_SCRIPT_VERSION_CHANGES[idx]}`;
                 releaseNotes += '</ul>';
             }
             else {
                 releaseNotes += '<ul><li>Nothing major.</ul>';
             }
-            WazeWrap.Interface.ShowScriptUpdate(SCRIPT_NAME, SCRIPT_VERSION, releaseNotes, SCRIPT_GF_URL, SCRIPT_FORUM_URL);
+            WazeWrap.Interface.ShowScriptUpdate(_SCRIPT_SHORT_NAME, _SCRIPT_VERSION, releaseNotes, (_IS_BETA_VERSION ? dec(_BETA_URL) : _PROD_URL).replace(/code\/.*\.js/, ''), _FORUM_URL);
         }
     }
 
@@ -286,7 +294,7 @@
             _segmentsToRemove = [];
         }
         _saveButtonObserver.disconnect();
-        _saveButtonObserver.observe($('#edit-buttons .waze-icon-save')[0], {
+        _saveButtonObserver.observe(document.querySelector('#toolbar .js-save-popover-target'), {
             childList: false, attributes: true, attributeOldValue: true, characterData: false, characterDataOldValue: false, subtree: false
         });
     }
@@ -748,19 +756,25 @@
                 });
             });
             _saveButtonObserver = new MutationObserver((mutationsList) => {
-                if (mutationsList.filter(
-                    (mutation) => (mutation.attributeName === 'class')
-                    && (mutation.target.classList.contains('waze-icon-save'))
-                    && (mutation.oldValue.indexOf('ItemDisabled') === -1)
-                    && (mutation.target.classList.contains('ItemDisabled'))
-                ).length > 0) {
+                if ((W.model.actionManager._redoStack.length === 0)
+                    // 2023.04.06.01: Production save button observer mutations
+                    && (mutationsList.some((mutation) => (mutation.attributeName === 'class')
+                            && mutation.target.classList.contains('waze-icon-save')
+                            && (mutation.oldValue.indexOf('ItemDisabled') === -1)
+                            && mutation.target.classList.contains('ItemDisabled'))
+                    // 2023.04.06.01: Beta save button observer mutations
+                        || mutationsList.some((mutation) => ((mutation.attributeName === 'disabled')
+                            && (mutation.oldValue === 'false')
+                            && (mutation.target.attributes.disabled.value === 'true')))
+                    )
+                ) {
                     if (W.editingMediator.attributes.editingHouseNumbers)
                         processSegs('afterSave', W.model.segments.getByIds(_segmentsToProcess), true);
                     else
                         processSegmentsToRemove();
                 }
             });
-            _saveButtonObserver.observe($('#edit-buttons .waze-icon-save')[0], {
+            _saveButtonObserver.observe(document.querySelector('#toolbar .js-save-popover-target'), {
                 childList: false, attributes: true, attributeOldValue: true, characterData: false, characterDataOldValue: false, subtree: false
             });
             _saveButtonObserver.observing = true;
@@ -925,33 +939,107 @@
         }
     }
 
+    function checkHnNavpointsVersion() {
+        if (_IS_ALPHA_VERSION)
+            return;
+        try {
+            const metaUrl = _IS_BETA_VERSION ? dec(_BETA_META_URL) : _PROD_META_URL;
+            GM_xmlhttpRequest({
+                url: metaUrl,
+                onload(res) {
+                    const latestVersion = res.responseText.match(/@version\s+(.*)/)[1];
+                    if ((latestVersion > _SCRIPT_VERSION) && (latestVersion > (_lastVersionChecked || '0'))) {
+                        _lastVersionChecked = latestVersion;
+                        WazeWrap.Alerts.info(
+                            _SCRIPT_LONG_NAME,
+                            `<a href="${(_IS_BETA_VERSION ? dec(_BETA_URL) : _PROD_URL)}" target = "_blank">Version ${latestVersion}</a> is available.<br>Update now to get the latest features and fixes.`,
+                            true,
+                            false
+                        );
+                    }
+                },
+                onerror(res) {
+                    // Silently fail with an error message in the console.
+                    logError('Upgrade version check:', res);
+                }
+            });
+        }
+        catch (err) {
+            // Silently fail with an error message in the console.
+            logError('Upgrade version check:', err);
+        }
+    }
+
     async function onWazeWrapReady() {
-        const navPointsNumbersLayersOptions = {
-            displayInLayerSwitcher: true,
-            uniqueName: '__HNNavPointsNumbersLayer',
-            selectable: true,
-            labelSelect: true,
-            rendererOptions: { zIndexing: true },
-            styleMap: new OpenLayers.StyleMap({
-                default: new OpenLayers.Style({
-                    strokeColor: '${Color}',
-                    strokeOpacity: 1,
-                    strokeWidth: 3,
-                    fillColor: '${Color}',
-                    fillOpacity: 0.5,
-                    pointerEvents: 'visiblePainted',
-                    label: '${hNumber}',
-                    fontSize: '12px',
-                    fontFamily: 'Rubik, Boing-light, sans-serif;',
-                    fontWeight: 'bold',
-                    direction: '${textDir}',
-                    labelOutlineColor: '${Color}',
-                    labelOutlineWidth: 3,
-                    labelSelect: true
-                })
-            })
-        };
         log('Initializing.');
+        checkHnNavpointsVersion();
+        const navPointsNumbersLayersOptions = {
+                displayInLayerSwitcher: true,
+                uniqueName: '__HNNavPointsNumbersLayer',
+                selectable: true,
+                labelSelect: true,
+                rendererOptions: { zIndexing: true },
+                styleMap: new OpenLayers.StyleMap({
+                    default: new OpenLayers.Style({
+                        strokeColor: '${Color}',
+                        strokeOpacity: 1,
+                        strokeWidth: 3,
+                        fillColor: '${Color}',
+                        fillOpacity: 0.5,
+                        pointerEvents: 'visiblePainted',
+                        label: '${hNumber}',
+                        fontSize: '12px',
+                        fontFamily: 'Rubik, Boing-light, sans-serif;',
+                        fontWeight: 'bold',
+                        direction: '${textDir}',
+                        labelOutlineColor: '${Color}',
+                        labelOutlineWidth: 3,
+                        labelSelect: true
+                    })
+                })
+            },
+            buildCheckBox = (id = '', label = '', checked = true, title = '', disabled = false) => `<wz-checkbox id="${id}" title="${title}"`
+                + `${(disabled ? ' disabled' : '')}${(checked ? ' checked' : '')}`
+                + `>${label}</wz-checkbox>`,
+            buildTextBox = (id = '', label = '', value = '', placeHolder = '', maxlength = 0, autoComplete = 'off', title = '', disabled = false) => `<wz-text-input id="${id}" label="${label}"`
+                + ` value=${value} placeholder="${placeHolder}" maxlength="${maxlength}" autocomplete="${autoComplete}" title="${title}"`
+                + `${(disabled ? ' disabled' : '')}`
+                + '></wz-text-input>',
+            handleCheckboxToggle = function () {
+                const settingName = $(this)[0].id.substr(14);
+                if (settingName === 'enableTooltip') {
+                    if (!this.checked)
+                        _HNNavPointsNumbersLayer.clearMarkers();
+                    else
+                        _HNNavPointsNumbersLayer.destroyFeatures();
+                    W.map.removeLayer(_HNNavPointsNumbersLayer);
+                    if (this.checked)
+                        _HNNavPointsNumbersLayer = new OpenLayers.Layer.Markers('HN NavPoints Numbers Layer', navPointsNumbersLayersOptions);
+                    else
+                        _HNNavPointsNumbersLayer = new OpenLayers.Layer.Vector('HN NavPoints Numbers Layer', navPointsNumbersLayersOptions);
+                    W.map.addLayer(_HNNavPointsNumbersLayer);
+                    _HNNavPointsNumbersLayer.setVisibility(_settings.hnNumbers);
+                }
+                _settings[settingName] = this.checked;
+                if (settingName === 'keepHNLayerOnTop')
+                    checkLayerIndex();
+                saveSettingsToStorage();
+                if ((settingName === 'enableTooltip') && (W.map.getZoom() > (_settings.disableBelowZoom - 1)) && (_settings.hnLines || _settings.hnNumbers))
+                    processSegs('settingChanged', W.model.segments.getByAttributes({ hasHNs: true }), true, 0);
+            },
+            handleTextboxChange = function () {
+                const newVal = Math.min(22, Math.max(16, parseInt(this.value)));
+                if ((newVal !== _settings.disableBelowZoom) || (parseInt(this.value) !== newVal)) {
+                    if (newVal !== parseInt(this.value))
+                        this.value = newVal;
+                    _settings.disableBelowZoom = newVal;
+                    saveSettingsToStorage();
+                    if ((W.map.getZoom() < newVal) && (_settings.hnLines || _settings.hnNumbers))
+                        processSegs('settingChanged', null, true, 0);
+                    else if (_settings.hnLines || _settings.hnNumbers)
+                        processSegs('settingChanged', W.model.segments.getByAttributes({ hasHNs: true }), true, 0);
+                }
+            };
         await loadSettingsFromStorage();
         WazeWrap.Interface.AddLayerCheckbox('display', 'HN NavPoints', _settings.hnLines, hnLayerToggled);
         WazeWrap.Interface.AddLayerCheckbox('display', 'HN NavPoints Numbers', _settings.hnNumbers, hnNumbersLayerToggled);
@@ -985,27 +1073,19 @@
             () => { $('#layer-switcher-item_hn_navpoints_numbers').click(); },
             null
         ).add();
-        $('#sidepanel-prefs').append(() => {
-            let htmlOut = '<div style="border-bottom:1px solid black; padding-bottom:10px;';
-            if ($('#sidepanel-prefs')[0].lastChild.tagName.search(/HR/gi) > -1) {
-                const elmnt = $('#sidepanel-prefs')[0].lastChild;
-                elmnt.style.borderTopColor = 'black';
-                elmnt.style.color = 'black';
-            }
-            else {
-                htmlOut += 'border-top:1px solid black;';
-            }
-            htmlOut += '"><h4>WME HN NavPoints</h4>'
-            + '<div style="font-size:12px; margin-left:6px;">'
-            + '<div style="margin-bottom:5px;" title="Disable NavPoints and house numbers when zoom level is less than specified number.\r\nMinimum: 16\r\nDefault: 17">'
-            + `Disable when zoom level <<input type="text" id="HNNavPoints_disableBelowZoom" style="width:24px; height:20px; margin-left:4px;" value="${_settings.disableBelowZoom}"></input></div>`
-            + `<input type="checkbox" style="margin-top:1px;" id="HNNavPoints_cbenableTooltip" title="Enable tooltip when mousing over house numbers."${(_settings.enableTooltip ? ' checked' : '')}>`
-            + '     <label for="HNNavPoints_cbenableTooltip" style="font-weight:normal; vertical-align:top"'
-            + '         title="Enable tooltip when mousing over house numbers.\r\nWarning: This may cause performance issues.">Enable tooltip</label><br>'
-            + '<input type="checkbox" style="margin-top:1px;" id="HNNavPoints_cbkeepHNLayerOnTop" '
-            + `title="Keep house numbers layer on top of all other layers."${(_settings.keepHNLayerOnTop ? ' checked' : '')}>`
-            + '     <label for="HNNavPoints_cbenableTooltip" style="font-weight:normal; vertical-align:top" title="Keep house numbers layer on top of all other layers.">Keep HN layer on top</label>'
+        const { tabLabel, tabPane } = W.userscripts.registerSidebarTab('HN-NavPoints');
+        tabLabel.innerHTML = '<i class="w-icon w-icon-location"></i>';
+        tabLabel.title = _SCRIPT_SHORT_NAME;
+        tabPane.innerHTML = `<h4><b>${_SCRIPT_LONG_NAME}</b></h4>`
+            + `<h6 style="margin-top:0px">${_SCRIPT_VERSION}</h6>`
+            + '<form class="attributes-form side-panel-section">'
+            + '<div class="form-group">'
+            + `${buildTextBox('HNNavPoints_disableBelowZoom', 'Disable when zoom level is (<) less than:', _settings.disableBelowZoom, '', 2, 'off', 'Disable NavPoints and house numbers when zoom level is less than specified number.\r\nMinimum: 16\r\nDefault: 17', false)}`
+            + `${buildCheckBox('HNNavPoints_cbenableTooltip', 'Enable tooltip', _settings.enableTooltip, 'Enable tooltip when mousing over house numbers.\r\nWarning: This may cause performance issues.', false)}`
+            + `${buildCheckBox('HNNavPoints_cbkeepHNLayerOnTop', 'Keep HN layer on top', _settings.keepHNLayerOnTop, 'Keep house numbers layer on top of all other layers.', false)}`
             + '</div>'
+            + '</form>'
+            + '<label class="control-label">Color Legend</label>'
             + '<div style="margin:0 10px 0 10px; width:130px; text-align:center; font-size:12px; background:black; font-weight:600;">'
             + ' <div style="text-shadow:0 0 3px white,0 0 3px white,0 0 3px white,0 0 3px white,0 0 3px white,0 0 3px white,0 0 3px white,0 0 3px white,0 0 3px white,0 0 3px white;">Touched</div>'
             + ' <div style="text-shadow:0 0 3px orange,0 0 3px orange,0 0 3px orange,0 0 3px orange,0 0 3px orange,0 0 3px orange,0 0 3px orange,0 0 3px orange,0 0 3px orange,0 0 3px orange;'
@@ -1014,43 +1094,10 @@
             + '     ">Untouched</div>'
             + ' <div style="text-shadow:0 0 3px red,0 0 3px red,0 0 3px red,0 0 3px red,0 0 3px red,0 0 3px red,0 0 3px red,0 0 3px red,0 0 3px red,0 0 3px red;">Untouched forced</div>'
             + '</div></div>';
-            return htmlOut;
-        });
-        $('#HNNavPoints_disableBelowZoom').on('change', function () {
-            const newVal = Math.min(22, Math.max(16, parseInt(this.value)));
-            if ((newVal !== _settings.disableBelowZoom) || (this.value !== newVal)) {
-                if (newVal !== parseInt(this.value))
-                    this.value = newVal;
-                _settings.disableBelowZoom = newVal;
-                saveSettingsToStorage();
-                if ((W.map.getZoom() < newVal) && (_settings.hnLines || _settings.hnNumbers))
-                    processSegs('settingChanged', null, true, 0);
-                else if (_settings.hnLines || _settings.hnNumbers)
-                    processSegs('settingChanged', W.model.segments.getByAttributes({ hasHNs: true }), true, 0);
-            }
-        });
-        $('input[id^="HNNavPoints_cb"]').off().on('click', function () {
-            const settingName = $(this)[0].id.substr(14);
-            if (settingName === 'enableTooltip') {
-                if (!this.checked)
-                    _HNNavPointsNumbersLayer.clearMarkers();
-                else
-                    _HNNavPointsNumbersLayer.destroyFeatures();
-                W.map.removeLayer(_HNNavPointsNumbersLayer);
-                if (this.checked)
-                    _HNNavPointsNumbersLayer = new OpenLayers.Layer.Markers('HN NavPoints Numbers Layer', navPointsNumbersLayersOptions);
-                else
-                    _HNNavPointsNumbersLayer = new OpenLayers.Layer.Vector('HN NavPoints Numbers Layer', navPointsNumbersLayersOptions);
-                W.map.addLayer(_HNNavPointsNumbersLayer);
-                _HNNavPointsNumbersLayer.setVisibility(_settings.hnNumbers);
-            }
-            _settings[settingName] = this.checked;
-            if (settingName === 'keepHNLayerOnTop')
-                checkLayerIndex();
-            saveSettingsToStorage();
-            if ((settingName === 'enableTooltip') && (W.map.getZoom() > (_settings.disableBelowZoom - 1)) && (_settings.hnLines || _settings.hnNumbers))
-                processSegs('settingChanged', W.model.segments.getByAttributes({ hasHNs: true }), true, 0);
-        });
+        tabPane.id = 'sidepanel-hn-navpoints';
+        await W.userscripts.waitForElementConnected(tabPane);
+        $('#HNNavPoints_disableBelowZoom').off().on('focusout', handleTextboxChange);
+        $('wz-checkbox[id^="HNNavPoints_cb"]').off().on('click', handleCheckboxToggle);
         if (!_$hnNavPointsTooltipDiv) {
             $('#map').append(
                 '<div data-tippy-root id="hnNavPointsTooltipDiv" style="z-index:9999; visibility:visible; position:absolute; inset: auto auto 0px 0px; '
@@ -1062,7 +1109,7 @@
         }
         await initBackgroundTasks('enable');
         checkLayerIndex();
-        log(`Fully initialized in ${Math.round(performance.now() - LOAD_BEGIN_TIME)} ms.`);
+        log(`Fully initialized in ${Math.round(performance.now() - _LOAD_BEGIN_TIME)} ms.`);
         showScriptInfoAlert();
         if (_scriptActive)
             processSegs('init', W.model.segments.getByAttributes({ hasHNs: true }));
