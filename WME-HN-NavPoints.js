@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name            WME HN NavPoints (beta)
+// @name            WME HN NavPoints
 // @namespace       https://greasyfork.org/users/166843
 // @description     Shows navigation points of all house numbers in WME
 // @version         2023.04.19.01
