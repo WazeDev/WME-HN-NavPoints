@@ -2,7 +2,7 @@
 // @name            WME HN NavPoints (beta)
 // @namespace       https://greasyfork.org/users/166843
 // @description     Shows navigation points of all house numbers in WME
-// @version         2023.04.06.01
+// @version         2023.04.19.01
 // @author          dBsooner
 // @grant           GM_xmlhttpRequest
 // @connect         greasyfork.org
@@ -40,7 +40,7 @@
         _SCRIPT_VERSION = GM_info.script.version.toString(),
         _SCRIPT_VERSION_CHANGES = ['<b>NEW:</b> Check for updated version on load.',
             '<b>NEW:</b> Moved settings to new HN NavPoints tab.',
-            '<b>CHANGE:</b> Future (possible) WME changes preparation.'
+            '<b>CHANGE:</b> WME production now includes function from WME beta.'
         ],
         _DEBUG = /[βΩ]/.test(_SCRIPT_SHORT_NAME),
         _LOAD_BEGIN_TIME = performance.now(),
