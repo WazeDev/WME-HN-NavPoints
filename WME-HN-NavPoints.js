@@ -344,6 +344,8 @@
             processSegs('exithousenumbers', W.model.segments.getByIds([..._segmentsToProcess]), true);
             _segmentsToProcess = [];
             _segmentsToRemove = [];
+            checkTimeout({ timeout: 'checkMarkersEvents' });
+            checkTimeout({ timeout: 'setMarkersEvents' });
             _wmeHnLayer = undefined;
         }
         else {
