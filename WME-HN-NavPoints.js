@@ -36,7 +36,7 @@
         _BETA_DL_URL = 'YUhSMGNITTZMeTluY21WaGMzbG1iM0pyTG05eVp5OXpZM0pwY0hSekx6TTVNRFUzTXkxM2JXVXRhRzR0Ym1GMmNHOXBiblJ6TFdKbGRHRXZZMjlrWlM5WFRVVWxNakJJVGlVeU1FNWhkbEJ2YVc1MGN5VXlNQ2hpWlhSaEtTNTFjMlZ5TG1weg==',
         _ALERT_UPDATE = true,
         _SCRIPT_VERSION = GM_info.script.version.toString(),
-        _SCRIPT_VERSION_CHANGES = ['Reverted to 100% vanilla JavaScript, removing reliance on jQuery.',
+        _SCRIPT_VERSION_CHANGES = ['CHANGE: Reverted to 100% vanilla JavaScript, removing reliance on jQuery.',
             'CHANGE: Switch to WazeWrap for script update checking.'
         ],
         _DEBUG = /[βΩ]/.test(_SCRIPT_SHORT_NAME),
@@ -209,7 +209,7 @@
                 keys = '';
             }
             if (_settings[k] !== keys) {
-                _settings[k] = keys;
+                _settings[k] = '';
                 triggerSave = true;
             }
         });
@@ -715,7 +715,7 @@
         }
         else if (this.action === 'objects-state-deleted') {
             evt.forEach((obj) => {
-                if (_segmentsToRemove.indexOf(obj.getID()) === -1)
+                if (!_segmentsToRemove.includes(obj.getID()))
                     _segmentsToRemove.push(obj.getID());
             });
         }
@@ -739,7 +739,7 @@
     function objectsChangedHNs(evt) {
         if (!evt || preventProcess())
             return;
-        if ((evt.length === 1) && evt[0].getSegmentId() && (_segmentsToProcess.indexOf(evt[0].getSegmentId()) === -1))
+        if ((evt.length === 1) && evt[0].getSegmentId() && !_segmentsToProcess.includes(evt[0].getSegmentId()))
             _segmentsToProcess.push(evt[0].getSegmentId());
         checkMarkersEvents();
     }
@@ -747,7 +747,7 @@
     function objectsStateDeletedHNs(evt) {
         if (!evt || preventProcess())
             return;
-        if ((evt.length === 1) && evt[0].getSegmentId() && (_segmentsToProcess.indexOf(evt[0].getSegmentId()) === -1))
+        if ((evt.length === 1) && evt[0].getSegmentId() && !_segmentsToProcess.includes(evt[0].getSegmentId()))
             _segmentsToProcess.push(evt[0].getSegmentId());
         removeHNs(evt);
         checkMarkersEvents();
@@ -756,7 +756,7 @@
     function objectsAddedHNs(evt) {
         if (!evt || preventProcess())
             return;
-        if ((evt.length === 1) && evt[0].getSegmentId() && (_segmentsToProcess.indexOf(evt[0].getSegmentId()) === -1))
+        if ((evt.length === 1) && evt[0].getSegmentId() && !_segmentsToProcess.includes(evt[0].getSegmentId()))
             _segmentsToProcess.push(evt[0].getSegmentId());
         checkMarkersEvents(true, 0);
     }
@@ -777,14 +777,14 @@
             processSegmentsToRemove(true, [..._segmentsToProcess]);
             processSegs('afterclearactions', W.model.segments.getByIds([..._segmentsToProcess]), true);
         }
-        else if (evt.action?._description?.indexOf('Deleted house number') > -1) {
+        else if (evt.action?._description?.includes('Deleted house number')) {
             if (evt.type === 'afterundoaction')
                 drawHNs([evt.action.object]);
             else
                 removeHNs([evt.action.object]);
             setMarkersEvents();
         }
-        else if (evt.action?._description?.indexOf('Updated house number') > -1) {
+        else if (evt.action?._description?.includes('Updated house number')) {
             const tempEvt = _.cloneDeep(evt);
             if (evt.type === 'afterundoaction') {
                 if (tempEvt.action.newAttributes?.number)
@@ -798,13 +798,13 @@
             drawHNs([evt.action.object]);
             setMarkersEvents();
         }
-        else if (evt.action?._description?.indexOf('Added house number') > -1) {
+        else if (evt.action?._description?.includes('Added house number')) {
             if (evt.type === 'afterundoaction')
                 removeHNs([evt.action.houseNumber]);
             else
                 drawHNs([evt.action.houseNumber]);
         }
-        else if (evt.action?._description?.indexOf('Moved house number') > -1) {
+        else if (evt.action?._description?.includes('Moved house number')) {
             drawHNs([evt.action.newHouseNumber]);
         }
         else if (evt.action?.houseNumber) {
@@ -826,9 +826,9 @@
             _HNLayerObserver = new MutationObserver((mutationsList) => {
                 mutationsList.forEach((mutation) => {
                     if (mutation.type === 'attributes') {
-                        if ((mutation.oldValue?.indexOf('active') > -1) && (_holdFeatures.hn.length > 0) && (_wmeHnLayer.div.querySelectorAll('.active').length === 0))
+                        if (mutation.oldValue?.includes('active') && (_holdFeatures.hn.length > 0) && (_wmeHnLayer.div.querySelectorAll('.active').length === 0))
                             flushHeldFeatures();
-                        if ((mutation.oldValue?.indexOf('active') === -1) && mutation.target.classList.contains('active'))
+                        if (!mutation.oldValue?.indexOf('active') && mutation.target.classList.contains('active'))
                             checkMarkersEvents(true, 0, true, mutation.target);
                         const input = document.querySelector('div.olLayerDiv.house-numbers-layer div.house-number div.content.active:not(.new) input.number');
                         if (input?.value === '')
@@ -841,7 +841,7 @@
                     // 2023.04.06.01: Production save button observer mutations
                     && (mutationsList.some((mutation) => (mutation.attributeName === 'class')
                             && mutation.target.classList.contains('waze-icon-save')
-                            && (mutation.oldValue.indexOf('ItemDisabled') === -1)
+                            && !mutation.oldValue.includes('ItemDisabled')
                             && mutation.target.classList.contains('ItemDisabled'))
                     // 2023.04.06.01: Beta save button observer mutations
                         || mutationsList.some((mutation) => ((mutation.attributeName === 'disabled')
@@ -1144,7 +1144,7 @@
             'layers',
             'layersToggleHNNavPointsNumbers',
             _settings.toggleHNNavPointsNumbersShortcut,
-            () => { document.getElmentById('layer-switcher-item_hn_navpoints_numbers').dispatchEvent(new MouseEvent('click', { bubbles: true })); },
+            () => { document.getElementById('layer-switcher-item_hn_navpoints_numbers').dispatchEvent(new MouseEvent('click', { bubbles: true })); },
             null
         ).add();
         const { tabLabel, tabPane } = W.userscripts.registerSidebarTab('HN-NavPoints');
