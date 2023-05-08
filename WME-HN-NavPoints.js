@@ -2,7 +2,7 @@
 // @name            WME HN NavPoints (beta)
 // @namespace       https://greasyfork.org/users/166843
 // @description     Shows navigation points of all house numbers in WME
-// @version         2023.05.05.01
+// @version         2023.05.08.01
 // @author          dBsooner
 // @grant           GM_xmlhttpRequest
 // @connect         greasyfork.org
@@ -63,6 +63,7 @@
         },
         _timeouts = {
             checkMarkersEvents: undefined,
+            flushHeldFeatures: undefined,
             hideTooltip: undefined,
             onWmeReady: undefined,
             saveSettingsToStorage: undefined,
@@ -79,10 +80,13 @@
         _scriptActive = false,
         _HNLayerObserver,
         _saveButtonObserver,
+        _HNNavPointsLayer,
+        _HNNavPointsNumbersLayer,
         _wmeHnLayer,
         _processedSegments = [],
         _segmentsToProcess = [],
         _segmentsToRemove = [],
+        _hnNavPointsTooltipDiv,
         _popup = {
             inUse: false,
             hnNumber: -1,
@@ -264,39 +268,38 @@
         }
     }
 
-    function processSegmentsToRemove(force = false) {
-        if (_segmentsToRemove.length > 0) {
-            const hnNavPointsLayer = W.map.getLayerByName('HN NavPoints Layer'),
-                hnNavPointsNumbersLayer = W.map.getLayerByName('HN NavPoints Numbers Layer'),
-                linesToRemove = [],
-                hnsToRemove = [],
-                filterMarkers = function (marker) { return marker.segmentId === this; },
+    // eslint-disable-next-line default-param-last
+    function processSegmentsToRemove(force = false, segmentsArr) {
+        const segmentsToProcess = segmentsArr || _segmentsToRemove;
+        if (segmentsToProcess.length > 0) {
+            let linesToRemove = [],
+                hnsToRemove = [];
+            const filterMarkers = function (marker) { return marker.segmentId === this; },
                 processFilterMarkers = (marker) => hnsToRemove.push(marker);
-            for (let i = _segmentsToRemove.length - 1; i > -1; i--) {
-                const segId = _segmentsToRemove[i];
+            for (let i = segmentsToProcess.length - 1; i > -1; i--) {
+                const segId = segmentsToProcess[i];
                 if (!W.model.segments.objects[segId] || force) {
-                    _segmentsToRemove.splice(i, 1);
-                    linesToRemove.push(hnNavPointsLayer.getFeaturesByAttribute('segmentId', segId));
+                    segmentsToProcess.splice(i, 1);
+                    linesToRemove = linesToRemove.concat(_HNNavPointsLayer.getFeaturesByAttribute('segmentId', segId));
                     if (!_settings.enableTooltip)
-                        hnsToRemove.push(hnNavPointsNumbersLayer.getFeaturesByAttribute('segmentId', segId));
+                        hnsToRemove = hnsToRemove.concat(_HNNavPointsNumbersLayer.getFeaturesByAttribute('segmentId', segId));
                     else
-                        hnNavPointsNumbersLayer.markers.filter(filterMarkers.bind(segId)).forEach(processFilterMarkers);
+                        _HNNavPointsNumbersLayer.markers.filter(filterMarkers.bind(segId)).forEach(processFilterMarkers);
                 }
             }
             if (linesToRemove.length > 0)
-                hnNavPointsLayer.removeFeatures(linesToRemove);
+                _HNNavPointsLayer.removeFeatures(linesToRemove);
             if (hnsToRemove.length > 0) {
                 if (!_settings.enableTooltip)
-                    hnNavPointsNumbersLayer.removeFeatures(hnsToRemove);
+                    _HNNavPointsNumbersLayer.removeFeatures(hnsToRemove);
                 else
-                    hnsToRemove.forEach((marker) => hnNavPointsNumbersLayer.removeMarker(marker));
+                    hnsToRemove.forEach((marker) => _HNNavPointsNumbersLayer.removeMarker(marker));
             }
         }
     }
 
     async function hnLayerToggled(checked) {
-        const hnNavPointsLayer = W.map.getLayerByName('HN NavPoints Layer');
-        hnNavPointsLayer.setVisibility(checked);
+        _HNNavPointsLayer.setVisibility(checked);
         _settings.hnLines = checked;
         saveSettingsToStorage();
         if (checked) {
@@ -310,8 +313,7 @@
     }
 
     async function hnNumbersLayerToggled(checked) {
-        const hnNavPointsNumbersLayer = W.map.getLayerByName('HN NavPoints Numbers Layer');
-        hnNavPointsNumbersLayer.setVisibility(checked);
+        _HNNavPointsNumbersLayer.setVisibility(checked);
         _settings.hnNumbers = checked;
         saveSettingsToStorage();
         if (checked) {
@@ -338,11 +340,10 @@
         }
         if (!_HNLayerObserver.observing) {
             W.model.segmentHouseNumbers.clear();
-            const holdSegmentsToRemove = [..._segmentsToRemove];
-            _segmentsToRemove = _segmentsToRemove.concat([..._segmentsToProcess]);
-            processSegmentsToRemove(true);
-            _segmentsToRemove = [...holdSegmentsToRemove];
-            processSegs('exithousenumbers', W.model.segments.getByIds(_segmentsToProcess), true);
+            processSegmentsToRemove(true, [..._segmentsToProcess]);
+            processSegs('exithousenumbers', W.model.segments.getByIds([..._segmentsToProcess]), true);
+            _segmentsToProcess = [];
+            _segmentsToRemove = [];
             _wmeHnLayer = undefined;
         }
         else {
@@ -356,27 +357,24 @@
     }
 
     function flushHeldFeatures() {
+        checkTimeout({ timeout: 'flushHeldFeatures' });
         if (_holdFeatures.hn.length === 0)
             return;
-        const hnNavPointsLayer = W.map.getLayerByName('HN NavPoints Layer'),
-            hnNavPointsNumbersLayer = W.map.getLayerByName('HN NavPoints Numbers Layer');
-        if (hnNavPointsLayer.getFeaturesByAttribute('featureId', _holdFeatures.hn[0].attributes.featureId).length === 0) {
+        if (_HNNavPointsLayer.getFeaturesByAttribute('featureId', _holdFeatures.hn[0].attributes.featureId).length === 0) {
             if (_settings.enableTooltip)
-                hnNavPointsNumbersLayer.addMarker(_holdFeatures.hn);
+                _HNNavPointsNumbersLayer.addMarker(_holdFeatures.hn);
             else
-                hnNavPointsNumbersLayer.addFeatures(_holdFeatures.hn);
-            hnNavPointsLayer.addFeatures(_holdFeatures.lines);
+                _HNNavPointsNumbersLayer.addFeatures(_holdFeatures.hn);
+            _HNNavPointsLayer.addFeatures(_holdFeatures.lines);
         }
         _holdFeatures.hn = [];
         _holdFeatures.lines = [];
     }
 
     function removeHNs(objArr, holdFeatures = false) {
-        const linesToRemove = [],
-            hnsToRemove = [],
-            hnNavPointsLayer = W.map.getLayerByName('HN NavPoints Layer'),
-            hnNavPointsNumbersLayer = W.map.getLayerByName('HN NavPoints Numbers Layer'),
-            filterMarkers = function (a) { return a.featureId === this.attributes.id; },
+        let linesToRemove = [],
+            hnsToRemove = [];
+        const filterMarkers = function (a) { return a.featureId === this.attributes.id; },
             processFilterMarkers = (marker) => {
                 if (holdFeatures)
                     _holdFeatures.hn = marker;
@@ -385,25 +383,25 @@
         if (_holdFeatures.hn.length > 0)
             flushHeldFeatures();
         objArr.forEach((hnObj) => {
-            linesToRemove.push(hnNavPointsLayer.getFeaturesByAttribute('featureId', hnObj.attributes.id));
+            linesToRemove = linesToRemove.concat(_HNNavPointsLayer.getFeaturesByAttribute('featureId', hnObj.attributes.id));
             if (holdFeatures)
-                _holdFeatures.lines = hnNavPointsLayer.getFeaturesByAttribute('featureId', hnObj.attributes.id);
+                _holdFeatures.lines = _HNNavPointsLayer.getFeaturesByAttribute('featureId', hnObj.attributes.id);
             if (!_settings.enableTooltip) {
-                hnsToRemove.push(hnNavPointsNumbersLayer.getFeaturesByAttribute('featureId', hnObj.attributes.id));
+                hnsToRemove = hnsToRemove.concat(_HNNavPointsNumbersLayer.getFeaturesByAttribute('featureId', hnObj.attributes.id));
                 if (holdFeatures)
-                    _holdFeatures.hn = hnNavPointsNumbersLayer.getFeaturesByAttribute('featureId', hnObj.attributes.id);
+                    _holdFeatures.hn = _HNNavPointsNumbersLayer.getFeaturesByAttribute('featureId', hnObj.attributes.id);
             }
             else {
-                hnNavPointsNumbersLayer.markers.filter(filterMarkers.bind(hnObj)).forEach(processFilterMarkers);
+                _HNNavPointsNumbersLayer.markers.filter(filterMarkers.bind(hnObj)).forEach(processFilterMarkers);
             }
         });
         if (linesToRemove.length > 0)
-            hnNavPointsLayer.removeFeatures(linesToRemove);
+            _HNNavPointsLayer.removeFeatures(linesToRemove);
         if (hnsToRemove.length > 0) {
             if (!_settings.enableTooltip)
-                hnNavPointsNumbersLayer.removeFeatures(hnsToRemove);
+                _HNNavPointsNumbersLayer.removeFeatures(hnsToRemove);
             else
-                hnsToRemove.forEach((marker) => hnNavPointsNumbersLayer.removeMarker(marker));
+                hnsToRemove.forEach((marker) => _HNNavPointsNumbersLayer.removeMarker(marker));
         }
     }
 
@@ -411,16 +409,16 @@
         if (houseNumberArr.length === 0)
             return;
         doSpinner('drawHNs', true);
+        _holdFeatures.hn = [];
+        _holdFeatures.lines = [];
         let svg,
-            svgText;
-        const lineFeatures = [],
-            linesToRemove = [],
+            svgText,
             hnsToRemove = [],
+            linesToRemove = [];
+        const lineFeatures = [],
             numberFeatures = [],
             invokeTooltip = _settings.enableTooltip ? (evt) => { showTooltip(evt); } : undefined,
-            mapFeatureId = (marker) => marker.featureId,
-            hnNavPointsLayer = W.map.getLayerByName('HN NavPoints Layer'),
-            hnNavPointsNumbersLayer = W.map.getLayerByName('HN NavPoints Numbers Layer');
+            mapFeatureId = (marker) => marker.featureId;
         if (_settings.enableTooltip) {
             svg = createElem('svg', { xlink: 'http://www.w3.org/1999/xlink', xmlns: 'http://www.w3.org/2000/svg', viewBox: '0 0 40 14' });
             svgText = createElem('svgText', { 'text-anchor': 'middle', x: '20', y: '10' });
@@ -431,17 +429,17 @@
                 seg = W.model.segments.objects[segmentId];
             if (seg) {
                 const featureId = hnObj.getID(),
-                    markerIdx = _settings.enableTooltip ? hnNavPointsNumbersLayer.markers.map(mapFeatureId).indexOf(featureId) : undefined,
+                    markerIdx = _settings.enableTooltip ? _HNNavPointsNumbersLayer.markers.map(mapFeatureId).indexOf(featureId) : undefined,
                     // eslint-disable-next-line no-nested-ternary
-                    hnToRemove = _settings.enableTooltip ? (markerIdx > -1) ? hnNavPointsNumbersLayer.markers[markerIdx] : [] : hnNavPointsNumbersLayer.getFeaturesByAttribute('featureId', featureId),
+                    hnToRemove = _settings.enableTooltip ? (markerIdx > -1) ? _HNNavPointsNumbersLayer.markers[markerIdx] : [] : _HNNavPointsNumbersLayer.getFeaturesByAttribute('featureId', featureId),
                     rtlChar = /[\u0590-\u083F]|[\u08A0-\u08FF]|[\uFB1D-\uFDFF]|[\uFE70-\uFEFF]/mg,
                     textDir = (hnObj.getNumber().match(rtlChar) !== null) ? 'rtl' : 'ltr';
-                linesToRemove.push(hnNavPointsLayer.getFeaturesByAttribute('featureId', featureId));
+                linesToRemove = linesToRemove.concat(_HNNavPointsLayer.getFeaturesByAttribute('featureId', featureId));
                 if (hnToRemove.length > 0) {
-                    if (_settings.enableTooltip)
-                        hnsToRemove.push(hnToRemove);
+                    if (!_settings.enableTooltip)
+                        hnsToRemove = hnsToRemove.concat(_HNNavPointsNumbersLayer.getFeaturesByAttribute('featureId', featureId));
                     else
-                        hnsToRemove.push(hnNavPointsNumbersLayer.getFeaturesByAttribute('featureId', featureId));
+                        hnsToRemove.push(hnToRemove);
                 }
                 const p1 = new OpenLayers.Geometry.Point(hnObj.getFractionPoint().x, hnObj.getFractionPoint().y),
                     p2 = new OpenLayers.Geometry.Point(hnObj.getGeometry().x, hnObj.getGeometry().y),
@@ -487,32 +485,34 @@
                         segmentId, featureId, hNumber: hnObj.getNumber(), strokeWidth: 3, Color: strokeColor, textDir
                     }));
                 }
-                if ((_holdFeatures.hn.length > 0) && (_holdFeatures.hn.map((a) => a.attributes.featureId).indexOf(featureId) > -1)) {
-                    _holdFeatures.hn = [];
-                    _holdFeatures.lines = [];
-                }
             }
         }
+        if (linesToRemove.length > 0)
+            _HNNavPointsLayer.removeFeatures(linesToRemove);
+        if (hnsToRemove.length > 0) {
+            if (!_settings.enableTooltip)
+                _HNNavPointsNumbersLayer.removeFeatures(hnsToRemove);
+            else
+                hnsToRemove.forEach((marker) => _HNNavPointsNumbersLayer.removeMarker(marker));
+        }
         if (lineFeatures.length > 0)
-            hnNavPointsLayer.addFeatures(lineFeatures);
+            _HNNavPointsLayer.addFeatures(lineFeatures);
         if (numberFeatures.length > 0) {
             if (!_settings.enableTooltip)
-                hnNavPointsNumbersLayer.addFeatures(numberFeatures);
+                _HNNavPointsNumbersLayer.addFeatures(numberFeatures);
             else
-                numberFeatures.forEach((marker) => hnNavPointsNumbersLayer.addMarker(marker));
+                numberFeatures.forEach((marker) => _HNNavPointsNumbersLayer.addMarker(marker));
         }
         doSpinner('drawHNs', false);
     }
 
     function destroyAllHNs() {
         doSpinner('destroyAllHNs', true);
-        const hnNavPointsLayer = W.map.getLayerByName('HN NavPoints Layer'),
-            hnNavPointsNumbersLayer = W.map.getLayerByName('HN NavPoints Numbers Layer');
-        hnNavPointsLayer.destroyFeatures();
+        _HNNavPointsLayer.destroyFeatures();
         if (_settings.enableTooltip)
-            hnNavPointsNumbersLayer.clearMarkers();
+            _HNNavPointsNumbersLayer.clearMarkers();
         else
-            hnNavPointsNumbersLayer.destroyFeatures();
+            _HNNavPointsNumbersLayer.destroyFeatures();
         _processedSegments = [];
         doSpinner('destroyAllHNs', false);
         Promise.resolve();
@@ -544,20 +544,18 @@
                     drawHNs(jsonData.segmentHouseNumbers.objects);
             },
             mapHouseNumbers = (segObj) => segObj.getID(),
-            invokeProcessError = function (err) { processError(err, this); };
+            invokeProcessError = function (err) { return processError(err, this); };
         if ((action === 'objectsremoved')) {
             if (arrSegObjs?.length > 0) {
-                const removedSegIds = [],
-                    hnNavPointsLayer = W.map.getLayerByName('HN NavPoints Layer'),
-                    hnNavPointsNumbersLayer = W.map.getLayerByName('HN NavPoints Numbers Layer'),
-                    hnNavPointsToRemove = [],
+                const removedSegIds = [];
+                let hnNavPointsToRemove = [],
                     hnNavPointsNumbersToRemove = [];
                 arrSegObjs.forEach((segObj) => {
                     const segmentId = segObj.getID();
                     if (!eg.intersects(segObj.geometry) && (segmentId > 0)) {
-                        hnNavPointsToRemove.push(hnNavPointsLayer.getFeaturesByAttribute('segmentId', segmentId));
+                        hnNavPointsToRemove = hnNavPointsToRemove.concat(_HNNavPointsLayer.getFeaturesByAttribute('segmentId', segmentId));
                         if (!_settings.enableTooltip)
-                            hnNavPointsNumbersToRemove.push(hnNavPointsNumbersLayer.getFeaturesByAttribute('segmentId', segmentId));
+                            hnNavPointsNumbersToRemove = hnNavPointsNumbersToRemove.concat(_HNNavPointsNumbersLayer.getFeaturesByAttribute('segmentId', segmentId));
                         else
                             removedSegIds.push(segmentId);
                         const segIdx = findObjIndex(_processedSegments, 'segId', segmentId);
@@ -566,17 +564,17 @@
                     }
                 });
                 if (hnNavPointsToRemove.length > 0)
-                    hnNavPointsLayer.removeFeatures(hnNavPointsToRemove);
+                    _HNNavPointsLayer.removeFeatures(hnNavPointsToRemove);
                 if (hnNavPointsNumbersToRemove.length > 0)
-                    hnNavPointsNumbersLayer.removeFeatures(hnNavPointsNumbersToRemove);
+                    _HNNavPointsNumbersLayer.removeFeatures(hnNavPointsNumbersToRemove);
                 if (removedSegIds.length > 0) {
-                    hnNavPointsNumbersLayer.markers.filter((marker) => removedSegIds.includes(marker.segmentId)).forEach((marker) => {
-                        hnNavPointsNumbersLayer.removeMarker(marker);
+                    _HNNavPointsNumbersLayer.markers.filter((marker) => removedSegIds.includes(marker.segmentId)).forEach((marker) => {
+                        _HNNavPointsNumbersLayer.removeMarker(marker);
                     });
                 }
             }
         }
-        else { // action = 'objectsadded', 'zoomend', 'init', 'exithousenumbers', 'hnLayerToggled', 'hnNumbersLayerToggled', 'settingChanged', 'afterSave'
+        else { // action = 'objectsadded', 'zoomend', 'init', 'exithousenumbers', 'hnLayerToggled', 'hnNumbersLayerToggled', 'settingChanged', 'afterSave', 'afterclearactions'
             let i = arrSegObjs.length;
             while (i--) {
                 if (arrSegObjs[i].getID() < 0) {
@@ -636,7 +634,7 @@
         if (!evt || preventProcess())
             return;
         if (evt.type === 'click:input') {
-            if (!evt?.object?.dragging?.last)
+            if (evt?.object && evt.object.dragging && !evt.object.dragging.last)
                 removeHNs([evt.object.model], true);
         }
         else if (evt.type === 'delete') {
@@ -648,7 +646,7 @@
         }
         else if (evt.type === 'mouseup') {
             if (evt.target.classList.contains('drag-handle') && (_holdFeatures.hn.length > 0))
-                flushHeldFeatures();
+                _timeouts.setMarkersEvents = window.setTimeout(flushHeldFeatures, 100);
         }
     }
 
@@ -666,7 +664,7 @@
                 if (!marker.events.listeners.delete.some((cbFunc) => cbFunc.func === markerEvent))
                     marker.events.register('delete', null, markerEvent);
                 const dragHandle = marker.icon.div.children[0].querySelector('.drag-handle');
-                if (!dragHandle?.dataset.hnnpHasListeners) {
+                if (dragHandle && !dragHandle.dataset.hnnpHasListeners) {
                     dragHandle.addEventListener('mousedown', markerEvent.bind(marker));
                     dragHandle.addEventListener('mouseup', markerEvent.bind(marker));
                     dragHandle.dataset.hnnpHasListeners = true;
@@ -675,7 +673,7 @@
             if (reclick) {
                 const tmpNode = targetNode?.querySelector('input.number');
                 tmpNode?.focus();
-                tmpNode.setSelectionRange(tmpNode.selectionStart, tmpNode.selectionStart);
+                tmpNode?.setSelectionRange(tmpNode.selectionStart, tmpNode.selectionStart);
             }
         }
         else if (_wmeHnLayer) {
@@ -708,14 +706,12 @@
             processSegmentsToRemove();
         if (this.action === 'objectschanged-id') {
             const oldSegmentId = evt.oldID,
-                newSegmentID = evt.newID,
-                hnNavPointsLayer = W.map.getLayerByName('HN NavPoints Numbers Layer'),
-                hnNavPointsNumbersLayer = W.map.getLayerByName('HN NavPoints Numbers Layer');
-            hnNavPointsLayer.getFeaturesByAttribute('segmentId', oldSegmentId).forEach((feature) => { feature.attributes.segmentId = newSegmentID; });
+                newSegmentID = evt.newID;
+            _HNNavPointsLayer.getFeaturesByAttribute('segmentId', oldSegmentId).forEach((feature) => { feature.attributes.segmentId = newSegmentID; });
             if (_settings.enableTooltip)
-                hnNavPointsNumbersLayer.markers.filter((marker) => marker.segmentId === oldSegmentId).forEach((marker) => { marker.segmentId = newSegmentID; });
+                _HNNavPointsNumbersLayer.markers.filter((marker) => marker.segmentId === oldSegmentId).forEach((marker) => { marker.segmentId = newSegmentID; });
             else
-                hnNavPointsNumbersLayer.getFeaturesByAttribute('segmentId', oldSegmentId).forEach((feature) => { feature.attributes.segmentId = newSegmentID; });
+                _HNNavPointsNumbersLayer.getFeaturesByAttribute('segmentId', oldSegmentId).forEach((feature) => { feature.attributes.segmentId = newSegmentID; });
         }
         else if (this.action === 'objects-state-deleted') {
             evt.forEach((obj) => {
@@ -732,14 +728,12 @@
         if (!evt || preventProcess())
             return;
         const oldFeatureId = evt.oldID,
-            newFeatureId = evt.newID,
-            hnNavPointsLayer = W.map.getLayerByName('HN NavPoints Layer'),
-            hnNavPointsNumbersLayer = W.map.getLayerByName('HN NavPoints Numbers Layer');
-        hnNavPointsLayer.getFeaturesByAttribute('featureId', oldFeatureId).forEach((feature) => { feature.attributes.featureId = newFeatureId; });
+            newFeatureId = evt.newID;
+        _HNNavPointsLayer.getFeaturesByAttribute('featureId', oldFeatureId).forEach((feature) => { feature.attributes.featureId = newFeatureId; });
         if (_settings.enableTooltip)
-            hnNavPointsNumbersLayer.markers.filter((marker) => marker.featureId === oldFeatureId).forEach((marker) => { marker.featureId = newFeatureId; });
+            _HNNavPointsNumbersLayer.markers.filter((marker) => marker.featureId === oldFeatureId).forEach((marker) => { marker.featureId = newFeatureId; });
         else
-            hnNavPointsNumbersLayer.getFeaturesByAttribute('featureId', oldFeatureId).forEach((feature) => { feature.attributes.featureId = newFeatureId; });
+            _HNNavPointsNumbersLayer.getFeaturesByAttribute('featureId', oldFeatureId).forEach((feature) => { feature.attributes.featureId = newFeatureId; });
     }
 
     function objectsChangedHNs(evt) {
@@ -780,7 +774,8 @@
         if (!evt || preventProcess())
             return;
         if ((evt.type === 'afterclearactions') || (evt.type === 'noActions')) {
-            processSegmentsToRemove();
+            processSegmentsToRemove(true, [..._segmentsToProcess]);
+            processSegs('afterclearactions', W.model.segments.getByIds([..._segmentsToProcess]), true);
         }
         else if (evt.action?._description?.indexOf('Deleted house number') > -1) {
             if (evt.type === 'afterundoaction')
@@ -855,7 +850,7 @@
                     )
                 ) {
                     if (W.editingMediator.attributes.editingHouseNumbers)
-                        processSegs('afterSave', W.model.segments.getByIds(_segmentsToProcess), true);
+                        processSegs('afterSave', W.model.segments.getByIds([..._segmentsToProcess]), true);
                     else
                         processSegmentsToRemove();
                 }
@@ -960,48 +955,45 @@
             divElemRoot.appendChild(createElem('div', {
                 id: 'hnNavPointsTooltipDiv-arrow', class: 'tippy-arrow', style: 'position: absolute; left: 0px;'
             }));
-            const hnNavPointsTooltipDiv = document.getElementById('hnNavPointsTooltipDiv');
-            hnNavPointsTooltipDiv.replaceChildren(divElemRoot);
+            _hnNavPointsTooltipDiv.replaceChildren(divElemRoot);
             popupPixel.origX = popupPixel.x;
-            const popupWidthHalf = (hnNavPointsTooltipDiv.clientWidth / 2);
+            const popupWidthHalf = (_hnNavPointsTooltipDiv.clientWidth / 2);
             let arrowOffset = (popupWidthHalf - 15),
                 dataPlacement = 'top';
             popupPixel.x = ((popupPixel.x - popupWidthHalf + 5) > 0) ? (popupPixel.x - popupWidthHalf + 5) : 10;
             if (popupPixel.x === 10)
                 arrowOffset = popupPixel.origX - 22;
             if ((popupPixel.x + (popupWidthHalf * 2)) > W.map.getEl()[0].clientWidth) {
-                popupPixel.x = (popupPixel.origX - hnNavPointsTooltipDiv.clientWidth + 8);
-                arrowOffset = (hnNavPointsTooltipDiv.clientWidth - 30);
+                popupPixel.x = (popupPixel.origX - _hnNavPointsTooltipDiv.clientWidth + 8);
+                arrowOffset = (_hnNavPointsTooltipDiv.clientWidth - 30);
                 moveMap = true;
             }
-            if (popupPixel.y - [...hnNavPointsTooltipDiv.children].reduce((height, elem) => height + elem.getBoundingClientRect().height, 0) < 0) {
+            if (popupPixel.y - [..._hnNavPointsTooltipDiv.children].reduce((height, elem) => height + elem.getBoundingClientRect().height, 0) < 0) {
                 popupPixel.y += 14;
                 dataPlacement = 'bottom';
             }
             else {
-                popupPixel.y -= ([...hnNavPointsTooltipDiv.children].reduce((height, elem) => height + elem.getBoundingClientRect().height, 0) + 14);
+                popupPixel.y -= ([..._hnNavPointsTooltipDiv.children].reduce((height, elem) => height + elem.getBoundingClientRect().height, 0) + 14);
             }
-            hnNavPointsTooltipDiv.style.transform = `translate(${Math.round(popupPixel.x)}px, ${Math.round(popupPixel.y)}px)`;
-            hnNavPointsTooltipDiv.querySelector('#hnNavPointsTooltipDiv-arrow').style.transform = `translate(${Math.max(0, Math.round(arrowOffset))}px, 0px)`;
-            hnNavPointsTooltipDiv.querySelector('#hnNavPointsTooltipDiv-tooltip').setAttribute('data-placement', dataPlacement);
-            hnNavPointsTooltipDiv.querySelector('#hnNavPointsTooltipDiv-tooltip').setAttribute('data-state', 'visible');
-            hnNavPointsTooltipDiv.querySelector('#hnNavPointsTooltipDiv-content').setAttribute('data-state', 'visible');
+            _hnNavPointsTooltipDiv.style.transform = `translate(${Math.round(popupPixel.x)}px, ${Math.round(popupPixel.y)}px)`;
+            _hnNavPointsTooltipDiv.querySelector('#hnNavPointsTooltipDiv-arrow').style.transform = `translate(${Math.max(0, Math.round(arrowOffset))}px, 0px)`;
+            _hnNavPointsTooltipDiv.querySelector('#hnNavPointsTooltipDiv-tooltip').setAttribute('data-placement', dataPlacement);
+            _hnNavPointsTooltipDiv.querySelector('#hnNavPointsTooltipDiv-tooltip').setAttribute('data-state', 'visible');
+            _hnNavPointsTooltipDiv.querySelector('#hnNavPointsTooltipDiv-content').setAttribute('data-state', 'visible');
             _popup = { segmentId, hNumber: hnNumber, inUse: true };
         }
     }
 
     function stripTooltipHTML() {
         checkTimeout({ timeout: 'stripTooltipHTML' });
-        const hnNavPointsTooltipDiv = document.getElementById('hnNavPointsTooltipDiv');
-        hnNavPointsTooltipDiv.replaceChildren();
+        _hnNavPointsTooltipDiv.replaceChildren();
         _popup = { segmentId: -1, hnNumber: -1, inUse: false };
     }
 
     function hideTooltip() {
         checkTimeout({ timeout: 'hideTooltip' });
-        const hnNavPointsTooltipDiv = document.getElementById('hnNavPointsTooltipDiv');
-        hnNavPointsTooltipDiv.querySelector('#hnNavPointsTooltipDiv-content')?.setAttribute('data-state', 'hidden');
-        hnNavPointsTooltipDiv.querySelector('#hnNavPointsTooltipDiv-tooltip')?.setAttribute('data-state', 'hidden');
+        _hnNavPointsTooltipDiv.querySelector('#hnNavPointsTooltipDiv-content')?.setAttribute('data-state', 'hidden');
+        _hnNavPointsTooltipDiv.querySelector('#hnNavPointsTooltipDiv-tooltip')?.setAttribute('data-state', 'hidden');
         _timeouts.stripTooltipHTML = window.setTimeout(stripTooltipHTML, 400);
     }
 
@@ -1009,10 +1001,8 @@
         if (!evt)
             return;
         checkTimeout({ timeout: 'hideTooltip' });
-        const parentsArr = evt.toElement?.offsetParent ? [evt.toElement.offsetParent, evt.toElement.offsetParent.offSetParent] : [],
-            hnNavPointsNumbersLayer = W.map.getLayerByName('HN NavPoints Numbers Layer'),
-            hnNavPointsTooltipDiv = document.getElementById('hnNavPointsTooltipDiv');
-        if (evt.toElement && (parentsArr.includes(hnNavPointsNumbersLayer?.div) || parentsArr.includes(hnNavPointsTooltipDiv)))
+        const parentsArr = evt.toElement?.offsetParent ? [evt.toElement.offsetParent, evt.toElement.offsetParent.offSetParent] : [];
+        if (evt.toElement && (parentsArr.includes(_HNNavPointsNumbersLayer?.div) || parentsArr.includes(_hnNavPointsTooltipDiv)))
             return;
         _timeouts.hideTooltip = window.setTimeout(hideTooltip, 100, evt);
     }
@@ -1086,18 +1076,17 @@
             handleCheckboxToggle = function () {
                 const settingName = this.id.substring(14);
                 if (settingName === 'enableTooltip') {
-                    let hnNavPointsNumbersLayer = W.map.getLayerByName('HN NavPoints Numbers Layer');
                     if (!this.checked)
-                        hnNavPointsNumbersLayer.clearMarkers();
+                        _HNNavPointsNumbersLayer.clearMarkers();
                     else
-                        hnNavPointsNumbersLayer.destroyFeatures();
-                    W.map.removeLayer(hnNavPointsNumbersLayer);
+                        _HNNavPointsNumbersLayer.destroyFeatures();
+                    W.map.removeLayer(_HNNavPointsNumbersLayer);
                     if (this.checked)
-                        hnNavPointsNumbersLayer = new OpenLayers.Layer.Markers('HN NavPoints Numbers Layer', navPointsNumbersLayersOptions);
+                        _HNNavPointsNumbersLayer = new OpenLayers.Layer.Markers('HN NavPoints Numbers Layer', navPointsNumbersLayersOptions);
                     else
-                        hnNavPointsNumbersLayer = new OpenLayers.Layer.Vector('HN NavPoints Numbers Layer', navPointsNumbersLayersOptions);
-                    W.map.addLayer(hnNavPointsNumbersLayer);
-                    hnNavPointsNumbersLayer.setVisibility(_settings.hnNumbers);
+                        _HNNavPointsNumbersLayer = new OpenLayers.Layer.Vector('HN NavPoints Numbers Layer', navPointsNumbersLayersOptions);
+                    W.map.addLayer(_HNNavPointsNumbersLayer);
+                    _HNNavPointsNumbersLayer.setVisibility(_settings.hnNumbers);
                 }
                 _settings[settingName] = this.checked;
                 if (settingName === 'keepHNLayerOnTop')
@@ -1129,16 +1118,16 @@
         WazeWrap.Interface.AddLayerCheckbox('display', 'HN NavPoints', _settings.hnLines, hnLayerToggled);
         WazeWrap.Interface.AddLayerCheckbox('display', 'HN NavPoints Numbers', _settings.hnNumbers, hnNumbersLayerToggled);
 
-        const hnNavPointsLayer = new OpenLayers.Layer.Vector('HN NavPoints Layer', {
-                displayInLayerSwitcher: true,
-                uniqueName: '__HNNavPointsLayer'
-            }),
-            hnNavPointsNumbersLayer = _settings.enableTooltip
-                ? new OpenLayers.Layer.Markers('HN NavPoints Numbers Layer', navPointsNumbersLayersOptions)
-                : new OpenLayers.Layer.Vector('HN NavPoints Numbers Layer', navPointsNumbersLayersOptions);
-        W.map.addLayers([hnNavPointsLayer, hnNavPointsNumbersLayer]);
-        hnNavPointsLayer.setVisibility(_settings.hnLines);
-        hnNavPointsNumbersLayer.setVisibility(_settings.hnNumbers);
+        _HNNavPointsLayer = new OpenLayers.Layer.Vector('HN NavPoints Layer', {
+            displayInLayerSwitcher: true,
+            uniqueName: '__HNNavPointsLayer'
+        });
+        _HNNavPointsNumbersLayer = _settings.enableTooltip
+            ? new OpenLayers.Layer.Markers('HN NavPoints Numbers Layer', navPointsNumbersLayersOptions)
+            : new OpenLayers.Layer.Vector('HN NavPoints Numbers Layer', navPointsNumbersLayersOptions);
+        W.map.addLayers([_HNNavPointsLayer, _HNNavPointsNumbersLayer]);
+        _HNNavPointsLayer.setVisibility(_settings.hnLines);
+        _HNNavPointsNumbersLayer.setVisibility(_settings.hnNumbers);
         window.addEventListener('beforeunload', checkShortcutsChanged, false);
         new WazeWrap.Interface.Shortcut(
             'toggleHNNavPointsShortcut',
@@ -1206,12 +1195,13 @@
         tabPane.appendChild(docFrags);
         tabPane.id = 'sidepanel-hn-navpoints';
         await W.userscripts.waitForElementConnected(tabPane);
-        if (!document.getElementById('hnNavPointsTooltipDiv')) {
-            W.map.getEl()[0].appendChild(createElem('div', {
+        if (!_hnNavPointsTooltipDiv) {
+            _hnNavPointsTooltipDiv = createElem('div', {
                 id: 'hnNavPointsTooltipDiv',
                 style: 'z-index:9999; visibility:visible; position:absolute; inset: auto auto 0px 0px; margin: 0px; top: 0px; left: 0px;',
                 'data-tippy-root': false
-            }, [{ mouseenter: checkTooltip }, { mouseleave: hideTooltipDelay }]));
+            }, [{ mouseenter: checkTooltip }, { mouseleave: hideTooltipDelay }]);
+            W.map.getEl()[0].appendChild(_hnNavPointsTooltipDiv);
         }
         await initBackgroundTasks('enable');
         checkLayerIndex();
