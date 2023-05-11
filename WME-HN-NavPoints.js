@@ -2,7 +2,7 @@
 // @name            WME HN NavPoints (beta)
 // @namespace       https://greasyfork.org/users/166843
 // @description     Shows navigation points of all house numbers in WME
-// @version         2023.05.08.01
+// @version         2023.05.11.01
 // @author          dBsooner
 // @grant           GM_xmlhttpRequest
 // @connect         greasyfork.org
@@ -62,12 +62,11 @@
             processSegs: false
         },
         _timeouts = {
-            checkMarkersEvents: undefined,
-            flushHeldFeatures: undefined,
+            checkMarkersEvents: {},
+            flushHeldFeatures: {},
             hideTooltip: undefined,
             onWmeReady: undefined,
             saveSettingsToStorage: undefined,
-            setMarkersEvents: undefined,
             stripTooltipHTML: undefined
         },
         _holdFeatures = {
@@ -122,16 +121,21 @@
     }
 
     function createElem(type = '', attrs = {}, eventListener = []) {
-        const el = _elems[type]?.cloneNode(false) || _elems.div.cloneNode(false);
+        const el = _elems[type]?.cloneNode(false) || _elems.div.cloneNode(false),
+            applyEventListeners = function ([evt, cb]) {
+                return this.addEventListener(evt, cb);
+            };
         Object.keys(attrs).forEach((attr) => {
-            if ((attr === 'disabled') || (attr === 'checked') || (attr === 'selected') || (attr === 'textContent') || (attr === 'innerHTML'))
-                el[attr] = attrs[attr];
-            else
-                el.setAttribute(attr, attrs[attr]);
+            if ((attrs[attr] !== undefined) && (attrs[attr] !== 'undefined') && (attrs[attr] !== null) && (attrs[attr] !== 'null')) {
+                if ((attr === 'disabled') || (attr === 'checked') || (attr === 'selected') || (attr === 'textContent') || (attr === 'innerHTML'))
+                    el[attr] = attrs[attr];
+                else
+                    el.setAttribute(attr, attrs[attr]);
+            }
         });
         if (eventListener.length > 0) {
             eventListener.forEach((obj) => {
-                Object.entries(obj).map(([evt, cb]) => el.addEventListener(evt, cb));
+                Object.entries(obj).map(applyEventListeners.bind(el));
             });
         }
         return el;
@@ -274,7 +278,7 @@
         if (segmentsToProcess.length > 0) {
             let linesToRemove = [],
                 hnsToRemove = [];
-            const filterMarkers = function (marker) { return marker.segmentId === this; },
+            const filterMarkers = function (marker) { return marker?.segmentId === this; },
                 processFilterMarkers = (marker) => hnsToRemove.push(marker);
             for (let i = segmentsToProcess.length - 1; i > -1; i--) {
                 const segId = segmentsToProcess[i];
@@ -344,22 +348,23 @@
             processSegs('exithousenumbers', W.model.segments.getByIds([..._segmentsToProcess]), true);
             _segmentsToProcess = [];
             _segmentsToRemove = [];
-            checkTimeout({ timeout: 'checkMarkersEvents' });
-            checkTimeout({ timeout: 'setMarkersEvents' });
+            _timeouts.checkMarkersEvents = {};
+            _timeouts.flushHeldFeatures = {};
             _wmeHnLayer = undefined;
         }
         else {
             _segmentsToProcess = W.selectionManager.getSegmentSelection().segments.map((segment) => segment.attributes.id);
             _segmentsToRemove = [];
+            checkMarkersEvents(true);
         }
         _saveButtonObserver.disconnect();
-        _saveButtonObserver.observe(document.querySelector('#toolbar .js-save-popover-target'), {
+        _saveButtonObserver.observe(document.getElementById('save-button'), {
             childList: false, attributes: true, attributeOldValue: true, characterData: false, characterDataOldValue: false, subtree: false
         });
     }
 
-    function flushHeldFeatures() {
-        checkTimeout({ timeout: 'flushHeldFeatures' });
+    function flushHeldFeatures(toIndex = Math.random().toString(36).slice(2)) {
+        checkTimeout({ timeout: 'flushHeldFeatures', toIndex });
         if (_holdFeatures.hn.length === 0)
             return;
         if (_HNNavPointsLayer.getFeaturesByAttribute('featureId', _holdFeatures.hn[0].attributes.featureId).length === 0) {
@@ -376,7 +381,7 @@
     function removeHNs(objArr, holdFeatures = false) {
         let linesToRemove = [],
             hnsToRemove = [];
-        const filterMarkers = function (a) { return a.featureId === this.attributes.id; },
+        const filterMarkers = function (marker) { return marker?.featureId === this.attributes.id; },
             processFilterMarkers = (marker) => {
                 if (holdFeatures)
                     _holdFeatures.hn = marker;
@@ -425,7 +430,7 @@
             svg = createElem('svg', { xlink: 'http://www.w3.org/1999/xlink', xmlns: 'http://www.w3.org/2000/svg', viewBox: '0 0 40 14' });
             svgText = createElem('svgText', { 'text-anchor': 'middle', x: '20', y: '10' });
         }
-        for (let i = 0; i < houseNumberArr.length; i++) {
+        for (let i = 0, { length } = houseNumberArr; i < length; i++) {
             const hnObj = houseNumberArr[i],
                 segmentId = hnObj.getSegmentId(),
                 seg = W.model.segments.objects[segmentId];
@@ -645,31 +650,65 @@
         else if (evt.type === 'mousedown') {
             if (evt.target.classList.contains('drag-handle') && this?.model)
                 removeHNs([this.model], true);
+            else if (evt.target.classList.contains('fraction-point'))
+                removeHNs([_wmeHnLayer.markers.filter((obj) => obj.dragging.active && obj.input)?.[0]?.model], true);
         }
         else if (evt.type === 'mouseup') {
-            if (evt.target.classList.contains('drag-handle') && (_holdFeatures.hn.length > 0))
-                _timeouts.setMarkersEvents = window.setTimeout(flushHeldFeatures, 100);
+            if (evt.target.classList.contains('drag-handle') && (_holdFeatures.hn.length > 0)) {
+                const toIndex = Math.random().toString(36).slice(2);
+                _timeouts.flushHeldFeatures[toIndex] = window.setTimeout(flushHeldFeatures, 100, toIndex);
+            }
+            else if (evt.target.classList.contains('fraction-point') && (_holdFeatures.hn.length > 0)) {
+                const toIndex = Math.random().toString(36).slice(2);
+                _timeouts.flushHeldFeatures[toIndex] = window.setTimeout(flushHeldFeatures, 100, toIndex);
+            }
         }
+        checkMarkersEvents();
     }
 
-    function setMarkersEvents(reclick = false, targetNode = undefined) {
-        if (W.editingMediator.attributes.editingHouseNumbers) {
-            checkTimeout({ timeout: 'setMarkersEvents' });
+    // eslint-disable-next-line default-param-last
+    function checkMarkersEvents(retry = false, tries = 0, reclick, targetNode, toIndex = Math.random().toString(36).slice(2)) {
+        if (!W.editingMediator.attributes.editingHouseNumbers) {
+            if (retry && (tries < 50))
+                _timeouts.checkMarkersEvents[toIndex] = window.setTimeout(checkMarkersEvents, 100, true, ++tries, reclick, targetNode, toIndex);
+            else if (retry)
+                logError('Timeout (5 sec) exceeded waiting to enter editing house numbers mode.');
+            return;
+        }
+        const setMarkerEvent = function (marker, markerType, cbType, cbFunc, cbBind) {
             hideTooltip();
-            if (!_wmeHnLayer || (_wmeHnLayer?.markers?.length === 0)) {
-                _timeouts.setMarkersEvents = window.setTimeout(setMarkersEvents, 50, reclick, targetNode);
-                return;
+            if (markerType === 'input') {
+                marker.events.register(cbType, null, cbFunc);
             }
-            _wmeHnLayer.markers.forEach((marker) => {
-                if (!marker.events.listeners['click:input'].some((cbFunc) => cbFunc.func === markerEvent))
-                    marker.events.register('click:input', null, markerEvent);
-                if (!marker.events.listeners.delete.some((cbFunc) => cbFunc.func === markerEvent))
-                    marker.events.register('delete', null, markerEvent);
-                const dragHandle = marker.icon.div.children[0].querySelector('.drag-handle');
+            else if (markerType === 'drag-handle') {
+                const dragHandle = marker.icon.div.children[0]?.querySelector('.drag-handle');
                 if (dragHandle && !dragHandle.dataset.hnnpHasListeners) {
-                    dragHandle.addEventListener('mousedown', markerEvent.bind(marker));
-                    dragHandle.addEventListener('mouseup', markerEvent.bind(marker));
+                    dragHandle.addEventListener('mousedown', cbFunc.bind(cbBind));
+                    dragHandle.addEventListener('mouseup', cbFunc.bind(cbBind));
                     dragHandle.dataset.hnnpHasListeners = true;
+                }
+            }
+            else if (markerType === 'fraction-point') {
+                marker.icon.div.addEventListener('mousedown', cbFunc.bind(cbBind));
+                marker.icon.div.addEventListener('mouseup', cbFunc.bind(cbBind));
+                marker.icon.div.dataset.hnnpHasListeners = true;
+            }
+        };
+        checkTimeout({ timeout: 'checkMarkersEvents', toIndex });
+        if (_wmeHnLayer?.markers?.length > 0) {
+            const checkFunc = (cbFunc) => cbFunc.func === markerEvent;
+            _wmeHnLayer.markers.forEach((obj) => {
+                if (obj.input) {
+                    if (!obj.events.listeners['click:input']?.some(checkFunc))
+                        setMarkerEvent(obj, 'input', 'click:input', markerEvent);
+                    if (!obj.events.listeners.delete?.some(checkFunc))
+                        setMarkerEvent(obj, 'input', 'delete', markerEvent);
+                    if (!obj.icon.div.querySelector('.drag-handle')?.dataset.hnnpHasListeners)
+                        setMarkerEvent(obj, 'drag-handle', null, markerEvent, obj);
+                }
+                else if (obj.icon.div.classList.contains('fraction-point')) {
+                    if (!obj.icon.div.dataset.hnnpHasListeners)
+                        setMarkerEvent(obj, 'fraction-point', null, markerEvent, obj);
                 }
             });
             if (reclick) {
@@ -678,23 +717,8 @@
                 tmpNode?.setSelectionRange(tmpNode.selectionStart, tmpNode.selectionStart);
             }
         }
-        else if (_wmeHnLayer) {
-            _wmeHnLayer.markers.forEach((marker) => {
-                marker.events.unregister('click:input', null, markerEvent);
-                marker.events.unregister('delete', null, markerEvent);
-            });
-        }
-    }
-
-    // eslint-disable-next-line default-param-last
-    function checkMarkersEvents(retry = false, tries = 0, reclick, targetNode) {
-        checkTimeout({ timeout: 'checkMarkersEvents' });
-        if (_wmeHnLayer?.markers?.length > 0) {
-            if (!_wmeHnLayer.markers[0].events.listeners['click:input'].some((callbackFn) => callbackFn.func === markerEvent))
-                setMarkersEvents(reclick, targetNode);
-        }
         else if (retry && (tries < 50)) {
-            _timeouts.checkMarkersEvents = window.setTimeout(checkMarkersEvents, 100, true, ++tries, reclick, targetNode);
+            _timeouts.checkMarkersEvents[toIndex] = window.setTimeout(checkMarkersEvents, 100, true, ++tries, reclick, targetNode, toIndex);
         }
         else if (retry) {
             logError('Timeout (5 sec) exceeded waiting for markers to popuplate within checkMarkersEvents');
@@ -784,7 +808,7 @@
                 drawHNs([evt.action.object]);
             else
                 removeHNs([evt.action.object]);
-            setMarkersEvents();
+            checkMarkersEvents();
         }
         else if (evt.action?._description?.includes('Updated house number')) {
             const tempEvt = _.cloneDeep(evt);
@@ -798,7 +822,7 @@
             }
             removeHNs([tempEvt.action.object]);
             drawHNs([evt.action.object]);
-            setMarkersEvents();
+            checkMarkersEvents();
         }
         else if (evt.action?._description?.includes('Added house number')) {
             if (evt.type === 'afterundoaction')
@@ -811,7 +835,7 @@
         }
         else if (evt.action?.houseNumber) {
             drawHNs((evt.action.newHouseNumber ? [evt.action.newHouseNumber] : [evt.action.houseNumber]));
-            setMarkersEvents();
+            checkMarkersEvents();
         }
         checkMarkersEvents();
     }
@@ -834,22 +858,15 @@
                             checkMarkersEvents(true, 0, true, mutation.target);
                         const input = document.querySelector('div.olLayerDiv.house-numbers-layer div.house-number div.content.active:not(.new) input.number');
                         if (input?.value === '')
-                            input.addEventListener('change', setMarkersEvents);
+                            input.addEventListener('change', checkMarkersEvents);
                     }
                 });
             });
             _saveButtonObserver = new MutationObserver((mutationsList) => {
                 if ((W.model.actionManager._redoStack.length === 0)
-                    // 2023.04.06.01: Production save button observer mutations
-                    && (mutationsList.some((mutation) => (mutation.attributeName === 'class')
-                            && mutation.target.classList.contains('waze-icon-save')
-                            && !mutation.oldValue.includes('ItemDisabled')
-                            && mutation.target.classList.contains('ItemDisabled'))
-                    // 2023.04.06.01: Beta save button observer mutations
-                        || mutationsList.some((mutation) => ((mutation.attributeName === 'disabled')
-                            && (mutation.oldValue === 'false')
-                            && (mutation.target.attributes.disabled.value === 'true')))
-                    )
+                    && mutationsList.some((mutation) => ((mutation.attributeName === 'disabled')
+                            && (mutation.oldValue === 'true')
+                            && (mutation.target.disabled === true)))
                 ) {
                     if (W.editingMediator.attributes.editingHouseNumbers)
                         processSegs('afterSave', W.model.segments.getByIds([..._segmentsToProcess]), true);
