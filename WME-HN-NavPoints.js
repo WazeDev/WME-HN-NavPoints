@@ -2,7 +2,7 @@
 // @name            WME HN NavPoints
 // @namespace       https://greasyfork.org/users/166843
 // @description     Shows navigation points of all house numbers in WME
-// @version         2023.04.19.01
+// @version         2023.05.11.01
 // @author          dBsooner
 // @grant           GM_xmlhttpRequest
 // @connect         greasyfork.org
@@ -13,7 +13,7 @@
 // @contributionURL https://github.com/WazeDev/Thank-The-Authors
 // ==/UserScript==
 
-/* global _, $, GM_info, GM_xmlhttpRequest, OpenLayers, W, WazeWrap */
+/* global _, GM_info, GM_xmlhttpRequest, OpenLayers, W, WazeWrap */
 
 /*
  * Original concept and code for WME HN NavPoints was written by MajkiiTelini. After version 0.6.6, this
@@ -30,31 +30,43 @@
         _SCRIPT_LONG_NAME = GM_info.script.name,
         _IS_ALPHA_VERSION = /[Ω]/.test(_SCRIPT_SHORT_NAME),
         _IS_BETA_VERSION = /[β]/.test(_SCRIPT_SHORT_NAME),
-        _PROD_URL = 'https://greasyfork.org/scripts/390565-wme-hn-navpoints/code/WME%20HN%20NavPoints.user.js',
-        _PROD_META_URL = 'https://greasyfork.org/scripts/390565-wme-hn-navpoints/code/WME%20HN%20NavPoints.meta.js',
+        _PROD_DL_URL = 'https://greasyfork.org/scripts/390565-wme-hn-navpoints/code/WME%20HN%20NavPoints.user.js',
         _FORUM_URL = 'https://www.waze.com/forum/viewtopic.php?f=819&t=269397',
         _SETTINGS_STORE_NAME = 'WMEHNNavPoints',
-        _BETA_URL = 'YUhSMGNITTZMeTluY21WaGMzbG1iM0pyTG05eVp5OXpZM0pwY0hSekx6TTVNRFUzTXkxM2JXVXRhRzR0Ym1GMmNHOXBiblJ6TFdKbGRHRXZZMjlrWlM5WFRVVWxNakJJVGlVeU1FNWhkbEJ2YVc1MGN5VXlNQ2hpWlhSaEtTNTFjMlZ5TG1weg==',
-        _BETA_META_URL = 'YUhSMGNITTZMeTluY21WaGMzbG1iM0pyTG05eVp5OXpZM0pwY0hSekx6TTVNRFUzTXkxM2JXVXRhRzR0Ym1GMmNHOXBiblJ6TFdKbGRHRXZZMjlrWlM5WFRVVWxNakJJVGlVeU1FNWhkbEJ2YVc1MGN5VXlNQ2hpWlhSaEtTNXRaWFJoTG1weg==',
+        _BETA_DL_URL = 'YUhSMGNITTZMeTluY21WaGMzbG1iM0pyTG05eVp5OXpZM0pwY0hSekx6TTVNRFUzTXkxM2JXVXRhRzR0Ym1GMmNHOXBiblJ6TFdKbGRHRXZZMjlrWlM5WFRVVWxNakJJVGlVeU1FNWhkbEJ2YVc1MGN5VXlNQ2hpWlhSaEtTNTFjMlZ5TG1weg==',
         _ALERT_UPDATE = true,
         _SCRIPT_VERSION = GM_info.script.version.toString(),
-        _SCRIPT_VERSION_CHANGES = ['<b>NEW:</b> Check for updated version on load.',
-            '<b>NEW:</b> Moved settings to new HN NavPoints tab.',
-            '<b>CHANGE:</b> WME production now includes function from WME beta.'
+        _SCRIPT_VERSION_CHANGES = ['CHANGE: Reverted to 100% vanilla JavaScript, removing reliance on jQuery.',
+            'CHANGE: Switch to WazeWrap for script update checking.'
         ],
         _DEBUG = /[βΩ]/.test(_SCRIPT_SHORT_NAME),
         _LOAD_BEGIN_TIME = performance.now(),
+        _elems = {
+            div: document.createElement('div'),
+            h4: document.createElement('h4'),
+            h6: document.createElement('h6'),
+            form: document.createElement('form'),
+            i: document.createElement('i'),
+            label: document.createElement('label'),
+            li: document.createElement('li'),
+            p: document.createElement('p'),
+            svg: document.createElementNS('http://www.w3.org/2000/svg', 'svg'),
+            svgText: document.createElementNS('http://www.w3.org/2000/svg', 'text'),
+            ul: document.createElement('ul'),
+            'wz-checkbox': document.createElement('wz-checkbox'),
+            'wz-text-input': document.createElement('wz-text-input')
+        },
         _spinners = {
             destroyAllHNs: false,
             drawHNs: false,
             processSegs: false
         },
         _timeouts = {
-            checkMarkersEvents: undefined,
+            checkMarkersEvents: {},
+            flushHeldFeatures: {},
             hideTooltip: undefined,
             onWmeReady: undefined,
             saveSettingsToStorage: undefined,
-            setMarkersEvents: undefined,
             stripTooltipHTML: undefined
         },
         _holdFeatures = {
@@ -73,13 +85,12 @@
         _processedSegments = [],
         _segmentsToProcess = [],
         _segmentsToRemove = [],
-        _$hnNavPointsTooltipDiv,
+        _hnNavPointsTooltipDiv,
         _popup = {
             inUse: false,
             hnNumber: -1,
             segmentId: -1
-        },
-        _lastVersionChecked = '0';
+        };
 
     function log(message, data = '') { console.log(`${_SCRIPT_SHORT_NAME}:`, message, data); }
     function logError(message, data = '') { console.error(`${_SCRIPT_SHORT_NAME}:`, new Error(message), data); }
@@ -87,6 +98,47 @@
     function logDebug(message, data = '') {
         if (_DEBUG)
             log(message, data);
+    }
+
+    function $extend(...args) {
+        const extended = {},
+            deep = Object.prototype.toString.call(args[0]) === '[object Boolean]' ? args[0] : false,
+            merge = function (obj) {
+                Object.keys(obj).forEach((prop) => {
+                    if (Object.prototype.hasOwnProperty.call(obj, prop)) {
+                        if (deep && Object.prototype.toString.call(obj[prop]) === '[object Object]')
+                            extended[prop] = $extend(true, extended[prop], obj[prop]);
+                        else if ((obj[prop] !== undefined) && (obj[prop] !== null))
+                            extended[prop] = obj[prop];
+                    }
+                });
+            };
+        for (let i = deep ? 1 : 0, { length } = args; i < length; i++) {
+            if (args[i])
+                merge(args[i]);
+        }
+        return extended;
+    }
+
+    function createElem(type = '', attrs = {}, eventListener = []) {
+        const el = _elems[type]?.cloneNode(false) || _elems.div.cloneNode(false),
+            applyEventListeners = function ([evt, cb]) {
+                return this.addEventListener(evt, cb);
+            };
+        Object.keys(attrs).forEach((attr) => {
+            if ((attrs[attr] !== undefined) && (attrs[attr] !== 'undefined') && (attrs[attr] !== null) && (attrs[attr] !== 'null')) {
+                if ((attr === 'disabled') || (attr === 'checked') || (attr === 'selected') || (attr === 'textContent') || (attr === 'innerHTML'))
+                    el[attr] = attrs[attr];
+                else
+                    el.setAttribute(attr, attrs[attr]);
+            }
+        });
+        if (eventListener.length > 0) {
+            eventListener.forEach((obj) => {
+                Object.entries(obj).map(applyEventListeners.bind(el));
+            });
+        }
+        return el;
     }
 
     async function loadSettingsFromStorage() {
@@ -101,11 +153,11 @@
                 lastSaved: 0,
                 lastVersion: undefined
             },
-            loadedSettings = $.parseJSON(localStorage.getItem(_SETTINGS_STORE_NAME));
-        _settings = $.extend({}, defaultSettings, loadedSettings);
+            loadedSettings = JSON.parse(localStorage.getItem(_SETTINGS_STORE_NAME));
+        _settings = $extend(true, {}, defaultSettings, loadedSettings);
         const serverSettings = await WazeWrap.Remote.RetrieveSettings(_SETTINGS_STORE_NAME);
         if (serverSettings?.lastSaved > _settings.lastSaved)
-            $.extend(_settings, serverSettings);
+            _settings = $extend(true, _settings, serverSettings);
         if (_settings.disableBelowZoom < 11)
             _settings.disableBelowZoom += 12;
         _timeouts.saveSettingsToStorage = window.setTimeout(saveSettingsToStorage, 5000);
@@ -123,21 +175,20 @@
             logDebug('Settings saved.');
         }
     }
-
     function showScriptInfoAlert() {
         if (_ALERT_UPDATE && (_SCRIPT_VERSION !== _settings.lastVersion)) {
-            let releaseNotes = '';
-            releaseNotes += '<p>What\'s New:</p>';
+            const divElemRoot = createElem('div');
+            divElemRoot.appendChild(createElem('p', { textContent: 'What\'s New:' }));
+            const ulElem = createElem('ul');
             if (_SCRIPT_VERSION_CHANGES.length > 0) {
-                releaseNotes += '<ul>';
-                for (let idx = 0; idx < _SCRIPT_VERSION_CHANGES.length; idx++)
-                    releaseNotes += `<li>${_SCRIPT_VERSION_CHANGES[idx]}`;
-                releaseNotes += '</ul>';
+                for (let idx = 0, { length } = _SCRIPT_VERSION_CHANGES; idx < length; idx++)
+                    ulElem.appendChild(createElem('li', { innerHTML: _SCRIPT_VERSION_CHANGES[idx] }));
             }
             else {
-                releaseNotes += '<ul><li>Nothing major.</ul>';
+                ulElem.appendChild(createElem('li', { textContent: 'Nothing major.' }));
             }
-            WazeWrap.Interface.ShowScriptUpdate(_SCRIPT_SHORT_NAME, _SCRIPT_VERSION, releaseNotes, (_IS_BETA_VERSION ? dec(_BETA_URL) : _PROD_URL).replace(/code\/.*\.js/, ''), _FORUM_URL);
+            divElemRoot.appendChild(ulElem);
+            WazeWrap.Interface.ShowScriptUpdate(_SCRIPT_SHORT_NAME, _SCRIPT_VERSION, divElemRoot.innerHTML, (_IS_BETA_VERSION ? dec(_BETA_DL_URL) : _PROD_DL_URL).replace(/code\/.*\.js/, ''), _FORUM_URL);
         }
     }
 
@@ -162,7 +213,7 @@
                 keys = '';
             }
             if (_settings[k] !== keys) {
-                _settings[k] = keys;
+                _settings[k] = '';
                 triggerSave = true;
             }
         });
@@ -185,58 +236,69 @@
     }
 
     function doSpinner(spinnerName = '', spin = true) {
-        const $btn = $('#hnNPSpinner');
+        const btn = document.getElementById('hnNPSpinner');
         if (!spin) {
             _spinners[spinnerName] = false;
             if (!Object.values(_spinners).some((a) => a === true)) {
-                if ($btn.length > 0) {
-                    $btn.removeClass('fa-spin');
-                    $('#divHnNPSpinner').hide();
+                if (btn) {
+                    btn.classList.remove('fa-spin');
+                    document.getElementById('divHnNPSpinner').style.display = 'none';
                 }
                 else {
-                    $('#topbar-container .topbar').prepend(
-                        '<div id="divHnNPSpinner" title="WME HN NavPoints is currently processing house numbers." style="font-size:20px;background:white;float:left;margin-left:-20px;display:none;">'
-                    + '<i id="hnNPSpinner" class="fa fa-spinner"></i></div>'
-                    );
+                    const topBar = document.querySelector('#topbar-container .topbar'),
+                        divElem = createElem('div', {
+                            id: 'divHnNPSpinner', title: 'WME HN NavPoints is currently processing house numbers.', style: 'font-size:20px;background:white;float:left;display:none;'
+                        });
+                    divElem.appendChild(createElem('i', { id: 'hnNPSpinner', class: 'fa fa-spinner' }));
+                    topBar.insertBefore(divElem, topBar.firstChild);
                 }
             }
         }
         else {
             _spinners[spinnerName] = true;
-            if ($btn.length === 0) {
+            if (!btn) {
                 _spinners[spinnerName] = true;
-                $('#topbar-container .topbar').prepend(
-                    '<div id="divHnNPSpinner" title="WME HN NavPoints is currently processing house numbers." style="font-size:20px;background:white;float:left;margin-left:-20px;">'
-                + '<i id="hnNPSpinner" class="fa fa-spinner fa-spin"></i></div>'
-                );
+                const topBar = document.querySelector('#topbar-container .topbar'),
+                    divElem = createElem('div', {
+                        id: 'divHnNPSpinner', title: 'WME HN NavPoints is currently processing house numbers.', style: 'font-size:20px;background:white;float:left;'
+                    });
+                divElem.appendChild(createElem('i', { id: 'hnNPSpinner', class: 'fa fa-spinner fa-spin' }));
+                topBar.insertBefore(divElem, topBar.firstChild);
             }
-            else if (!$btn.hasClass('fa-spin')) {
-                $btn.addClass('fa-spin');
-                $('#divHnNPSpinner').show();
+            else if (!btn.classList.contains('fa-spin')) {
+                btn.classList.add('fa-spin');
+                document.getElementById('divHnNPSpinner').style.display = '';
             }
         }
     }
 
-    function processSegmentsToRemove(force = false) {
-        if (_segmentsToRemove.length > 0) {
-            const removeMarker = (marker) => { _HNNavPointsNumbersLayer.removeMarker(marker); };
+    // eslint-disable-next-line default-param-last
+    function processSegmentsToRemove(force = false, segmentsArr) {
+        const segmentsToProcess = segmentsArr || _segmentsToRemove;
+        if (segmentsToProcess.length > 0) {
             let linesToRemove = [],
                 hnsToRemove = [];
-            for (let i = _segmentsToRemove.length - 1; i > -1; i--) {
-                const segId = _segmentsToRemove[i];
+            const filterMarkers = function (marker) { return marker?.segmentId === this; },
+                processFilterMarkers = (marker) => hnsToRemove.push(marker);
+            for (let i = segmentsToProcess.length - 1; i > -1; i--) {
+                const segId = segmentsToProcess[i];
                 if (!W.model.segments.objects[segId] || force) {
-                    _segmentsToRemove.splice(i, 1);
+                    segmentsToProcess.splice(i, 1);
                     linesToRemove = linesToRemove.concat(_HNNavPointsLayer.getFeaturesByAttribute('segmentId', segId));
                     if (!_settings.enableTooltip)
                         hnsToRemove = hnsToRemove.concat(_HNNavPointsNumbersLayer.getFeaturesByAttribute('segmentId', segId));
                     else
-                        _HNNavPointsNumbersLayer.markers.filter((marker) => marker.segmentId === segId).forEach((marker) => removeMarker(marker));
+                        _HNNavPointsNumbersLayer.markers.filter(filterMarkers.bind(segId)).forEach(processFilterMarkers);
                 }
             }
             if (linesToRemove.length > 0)
                 _HNNavPointsLayer.removeFeatures(linesToRemove);
-            if (hnsToRemove.length > 0)
-                _HNNavPointsNumbersLayer.removeFeatures(hnsToRemove);
+            if (hnsToRemove.length > 0) {
+                if (!_settings.enableTooltip)
+                    _HNNavPointsNumbersLayer.removeFeatures(hnsToRemove);
+                else
+                    hnsToRemove.forEach((marker) => _HNNavPointsNumbersLayer.removeMarker(marker));
+            }
         }
     }
 
@@ -282,24 +344,27 @@
         }
         if (!_HNLayerObserver.observing) {
             W.model.segmentHouseNumbers.clear();
-            const holdSegmentsToRemove = [..._segmentsToRemove];
-            _segmentsToRemove = _segmentsToRemove.concat([..._segmentsToProcess]);
-            processSegmentsToRemove(true);
-            _segmentsToRemove = [...holdSegmentsToRemove];
-            processSegs('exithousenumbers', W.model.segments.getByIds(_segmentsToProcess), true);
+            processSegmentsToRemove(true, [..._segmentsToProcess]);
+            processSegs('exithousenumbers', W.model.segments.getByIds([..._segmentsToProcess]), true);
+            _segmentsToProcess = [];
+            _segmentsToRemove = [];
+            _timeouts.checkMarkersEvents = {};
+            _timeouts.flushHeldFeatures = {};
             _wmeHnLayer = undefined;
         }
         else {
             _segmentsToProcess = W.selectionManager.getSegmentSelection().segments.map((segment) => segment.attributes.id);
             _segmentsToRemove = [];
+            checkMarkersEvents(true);
         }
         _saveButtonObserver.disconnect();
-        _saveButtonObserver.observe(document.querySelector('#toolbar .js-save-popover-target'), {
+        _saveButtonObserver.observe(document.getElementById('save-button'), {
             childList: false, attributes: true, attributeOldValue: true, characterData: false, characterDataOldValue: false, subtree: false
         });
     }
 
-    function flushHeldFeatures() {
+    function flushHeldFeatures(toIndex = Math.random().toString(36).slice(2)) {
+        checkTimeout({ timeout: 'flushHeldFeatures', toIndex });
         if (_holdFeatures.hn.length === 0)
             return;
         if (_HNNavPointsLayer.getFeaturesByAttribute('featureId', _holdFeatures.hn[0].attributes.featureId).length === 0) {
@@ -316,6 +381,12 @@
     function removeHNs(objArr, holdFeatures = false) {
         let linesToRemove = [],
             hnsToRemove = [];
+        const filterMarkers = function (marker) { return marker?.featureId === this.attributes.id; },
+            processFilterMarkers = (marker) => {
+                if (holdFeatures)
+                    _holdFeatures.hn = marker;
+                hnsToRemove.push(marker);
+            };
         if (_holdFeatures.hn.length > 0)
             flushHeldFeatures();
         objArr.forEach((hnObj) => {
@@ -328,53 +399,54 @@
                     _holdFeatures.hn = _HNNavPointsNumbersLayer.getFeaturesByAttribute('featureId', hnObj.attributes.id);
             }
             else {
-                _HNNavPointsNumbersLayer.markers.filter((a) => a.featureId === hnObj.attributes.id).forEach((marker) => {
-                    if (holdFeatures)
-                        _holdFeatures.hn = marker;
-                    _HNNavPointsNumbersLayer.removeMarker(marker);
-                });
+                _HNNavPointsNumbersLayer.markers.filter(filterMarkers.bind(hnObj)).forEach(processFilterMarkers);
             }
         });
         if (linesToRemove.length > 0)
             _HNNavPointsLayer.removeFeatures(linesToRemove);
-        if (hnsToRemove.length > 0)
-            _HNNavPointsNumbersLayer.removeFeatures(hnsToRemove);
+        if (hnsToRemove.length > 0) {
+            if (!_settings.enableTooltip)
+                _HNNavPointsNumbersLayer.removeFeatures(hnsToRemove);
+            else
+                hnsToRemove.forEach((marker) => _HNNavPointsNumbersLayer.removeMarker(marker));
+        }
     }
 
     function drawHNs(houseNumberArr) {
         if (houseNumberArr.length === 0)
             return;
         doSpinner('drawHNs', true);
+        _holdFeatures.hn = [];
+        _holdFeatures.lines = [];
+        let svg,
+            svgText,
+            hnsToRemove = [],
+            linesToRemove = [];
         const lineFeatures = [],
-            numberFeatures = !_settings.enableTooltip ? [] : undefined,
-            svg = _settings.enableTooltip ? document.createElementNS('http://www.w3.org/2000/svg', 'svg') : undefined,
-            svgText = _settings.enableTooltip ? document.createElementNS('http://www.w3.org/2000/svg', 'text') : undefined,
-            invokeTooltip = _settings.enableTooltip ? (evt) => { showTooltip(evt); } : undefined;
+            numberFeatures = [],
+            invokeTooltip = _settings.enableTooltip ? (evt) => { showTooltip(evt); } : undefined,
+            mapFeatureId = (marker) => marker.featureId;
         if (_settings.enableTooltip) {
-            svg.setAttribute('xlink', 'http://www.w3.org/1999/xlink');
-            svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
-            svg.setAttribute('viewBox', '0 0 40 14');
-            svgText.setAttribute('text-anchor', 'middle');
-            svgText.setAttribute('x', '20');
-            svgText.setAttribute('y', '10');
+            svg = createElem('svg', { xlink: 'http://www.w3.org/1999/xlink', xmlns: 'http://www.w3.org/2000/svg', viewBox: '0 0 40 14' });
+            svgText = createElem('svgText', { 'text-anchor': 'middle', x: '20', y: '10' });
         }
-        for (let i = 0; i < houseNumberArr.length; i++) {
+        for (let i = 0, { length } = houseNumberArr; i < length; i++) {
             const hnObj = houseNumberArr[i],
                 segmentId = hnObj.getSegmentId(),
                 seg = W.model.segments.objects[segmentId];
             if (seg) {
                 const featureId = hnObj.getID(),
-                    markerIdx = _settings.enableTooltip ? _HNNavPointsNumbersLayer.markers.map((marker) => marker.featureId).indexOf(featureId) : undefined,
+                    markerIdx = _settings.enableTooltip ? _HNNavPointsNumbersLayer.markers.map(mapFeatureId).indexOf(featureId) : undefined,
                     // eslint-disable-next-line no-nested-ternary
                     hnToRemove = _settings.enableTooltip ? (markerIdx > -1) ? _HNNavPointsNumbersLayer.markers[markerIdx] : [] : _HNNavPointsNumbersLayer.getFeaturesByAttribute('featureId', featureId),
                     rtlChar = /[\u0590-\u083F]|[\u08A0-\u08FF]|[\uFB1D-\uFDFF]|[\uFE70-\uFEFF]/mg,
                     textDir = (hnObj.getNumber().match(rtlChar) !== null) ? 'rtl' : 'ltr';
-                _HNNavPointsLayer.removeFeatures(_HNNavPointsLayer.getFeaturesByAttribute('featureId', featureId));
+                linesToRemove = linesToRemove.concat(_HNNavPointsLayer.getFeaturesByAttribute('featureId', featureId));
                 if (hnToRemove.length > 0) {
-                    if (_settings.enableTooltip)
-                        _HNNavPointsNumbersLayer.removeMarker(hnToRemove);
+                    if (!_settings.enableTooltip)
+                        hnsToRemove = hnsToRemove.concat(_HNNavPointsNumbersLayer.getFeaturesByAttribute('featureId', featureId));
                     else
-                        _HNNavPointsNumbersLayer.removeFeatures(_HNNavPointsNumbersLayer.getFeaturesByAttribute('featureId', featureId));
+                        hnsToRemove.push(hnToRemove);
                 }
                 const p1 = new OpenLayers.Geometry.Point(hnObj.getFractionPoint().x, hnObj.getFractionPoint().y),
                     p2 = new OpenLayers.Geometry.Point(hnObj.getGeometry().x, hnObj.getGeometry().y),
@@ -404,7 +476,7 @@
                 if (_settings.enableTooltip) {
                     svg.setAttribute('style', `text-shadow:0 0 3px ${strokeColor},0 0 3px ${strokeColor},0 0 3px ${strokeColor},0 0 3px ${strokeColor},0 0 3px ${strokeColor},0 0 3px ${strokeColor};font-size:14px;font-weight:bold;font-family:"Open Sans", "Arial Unicode MS", "sans-serif";direction:${textDir}`);
                     svgText.textContent = hnObj.getNumber();
-                    svg.innerHTML = svgText.outerHTML;
+                    svg.replaceChildren(svgText);
                     const svgIcon = new WazeWrap.Require.Icon(`data:image/svg+xml,${svg.outerHTML}`, { w: 40, h: 18 }),
                         markerFeature = new OpenLayers.Marker(new OpenLayers.LonLat(p2.x, p2.y), svgIcon);
                     markerFeature.events.register('mouseover', null, invokeTooltip);
@@ -412,7 +484,7 @@
                     markerFeature.featureId = featureId;
                     markerFeature.segmentId = segmentId;
                     markerFeature.hnNumber = hnObj.getNumber() || '';
-                    _HNNavPointsNumbersLayer.addMarker(markerFeature);
+                    numberFeatures.push(markerFeature);
                 }
                 else {
                 // eslint-disable-next-line new-cap
@@ -420,16 +492,24 @@
                         segmentId, featureId, hNumber: hnObj.getNumber(), strokeWidth: 3, Color: strokeColor, textDir
                     }));
                 }
-                if ((_holdFeatures.hn.length > 0) && (_holdFeatures.hn.map((a) => a.attributes.featureId).indexOf(featureId) > -1)) {
-                    _holdFeatures.hn = [];
-                    _holdFeatures.lines = [];
-                }
             }
+        }
+        if (linesToRemove.length > 0)
+            _HNNavPointsLayer.removeFeatures(linesToRemove);
+        if (hnsToRemove.length > 0) {
+            if (!_settings.enableTooltip)
+                _HNNavPointsNumbersLayer.removeFeatures(hnsToRemove);
+            else
+                hnsToRemove.forEach((marker) => _HNNavPointsNumbersLayer.removeMarker(marker));
         }
         if (lineFeatures.length > 0)
             _HNNavPointsLayer.addFeatures(lineFeatures);
-        if (!_settings.enableTooltip && (numberFeatures.length > 0))
-            _HNNavPointsNumbersLayer.addFeatures(numberFeatures);
+        if (numberFeatures.length > 0) {
+            if (!_settings.enableTooltip)
+                _HNNavPointsNumbersLayer.addFeatures(numberFeatures);
+            else
+                numberFeatures.forEach((marker) => _HNNavPointsNumbersLayer.addMarker(marker));
+        }
         doSpinner('drawHNs', false);
     }
 
@@ -469,7 +549,9 @@
             processJSON = (jsonData) => {
                 if ((jsonData?.error === undefined) && (typeof jsonData?.segmentHouseNumbers?.objects !== 'undefined'))
                     drawHNs(jsonData.segmentHouseNumbers.objects);
-            };
+            },
+            mapHouseNumbers = (segObj) => segObj.getID(),
+            invokeProcessError = function (err) { return processError(err, this); };
         if ((action === 'objectsremoved')) {
             if (arrSegObjs?.length > 0) {
                 const removedSegIds = [];
@@ -499,7 +581,7 @@
                 }
             }
         }
-        else { // action = 'objectsadded', 'zoomend', 'init', 'exithousenumbers', 'hnLayerToggled', 'hnNumbersLayerToggled', 'settingChanged', 'afterSave'
+        else { // action = 'objectsadded', 'zoomend', 'init', 'exithousenumbers', 'hnLayerToggled', 'hnNumbersLayerToggled', 'settingChanged', 'afterSave', 'afterclearactions'
             let i = arrSegObjs.length;
             while (i--) {
                 if (arrSegObjs[i].getID() < 0) {
@@ -531,7 +613,7 @@
                 else
                     chunk = arrSegObjs.splice(0, 500);
                 try {
-                    W.controller.descartesClient.getHouseNumbers(chunk.map((segObj) => segObj.getID())).then(processJSON).catch((error) => processError(error, [...chunk]));
+                    W.controller.descartesClient.getHouseNumbers(chunk.map(mapHouseNumbers)).then(processJSON).catch(invokeProcessError.bind(chunk));
                 }
                 catch (error) {
                     processError(error, [...chunk]);
@@ -559,60 +641,84 @@
         if (!evt || preventProcess())
             return;
         if (evt.type === 'click:input') {
-            if (!evt?.object?.dragging?.last)
+            if (evt?.object && evt.object.dragging && !evt.object.dragging.last)
                 removeHNs([evt.object.model], true);
         }
         else if (evt.type === 'delete') {
             removeHNs([evt.object.model]);
         }
         else if (evt.type === 'mousedown') {
-            if (evt.target.classList.contains('drag-handle') && evt?.data?.marker?.model)
-                removeHNs([evt.data.marker.model], true);
+            if (evt.target.classList.contains('drag-handle') && this?.model)
+                removeHNs([this.model], true);
+            else if (evt.target.classList.contains('fraction-point'))
+                removeHNs([_wmeHnLayer.markers.filter((obj) => obj.dragging.active && obj.input)?.[0]?.model], true);
         }
         else if (evt.type === 'mouseup') {
-            if (evt.target.classList.contains('drag-handle') && (_holdFeatures.hn.length > 0))
-                flushHeldFeatures();
-        }
-    }
-
-    function setMarkersEvents(reclick = false, targetNode = undefined) {
-        if (W.editingMediator.attributes.editingHouseNumbers) {
-            checkTimeout({ timeout: 'setMarkersEvents' });
-            hideTooltip();
-            if (!_wmeHnLayer || (_wmeHnLayer?.markers?.length === 0)) {
-                _timeouts.setMarkersEvents = window.setTimeout(setMarkersEvents, 50, reclick, targetNode);
-                return;
+            if (evt.target.classList.contains('drag-handle') && (_holdFeatures.hn.length > 0)) {
+                const toIndex = Math.random().toString(36).slice(2);
+                _timeouts.flushHeldFeatures[toIndex] = window.setTimeout(flushHeldFeatures, 100, toIndex);
             }
-            _wmeHnLayer.markers.forEach((marker) => {
-                marker.events.unregister('click:input', null, markerEvent);
-                marker.events.unregister('delete', null, markerEvent);
-                marker.events.on({ 'click:input': markerEvent, delete: markerEvent });
-                $('.drag-handle', marker.icon.div.children[0]).off('mousedown', { marker }, markerEvent).on('mousedown', { marker }, markerEvent);
-                $('.drag-handle', marker.icon.div.children[0]).off('mouseup', { marker }, markerEvent).on('mouseup', { marker }, markerEvent);
-            });
-            if (reclick) {
-                const tmpNode = $('input.number', targetNode)[0];
-                $(tmpNode)[0].focus();
-                $(tmpNode)[0].setSelectionRange(tmpNode.selectionStart, tmpNode.selectionStart);
+            else if (evt.target.classList.contains('fraction-point') && (_holdFeatures.hn.length > 0)) {
+                const toIndex = Math.random().toString(36).slice(2);
+                _timeouts.flushHeldFeatures[toIndex] = window.setTimeout(flushHeldFeatures, 100, toIndex);
             }
         }
-        else if (_wmeHnLayer) {
-            _wmeHnLayer.markers.forEach((marker) => {
-                marker.events.unregister('click:input', null, markerEvent);
-                marker.events.unregister('delete', null, markerEvent);
-            });
-        }
+        checkMarkersEvents();
     }
 
     // eslint-disable-next-line default-param-last
-    function checkMarkersEvents(retry = false, tries = 0, reclick, targetNode) {
-        checkTimeout({ timeout: 'checkMarkersEvents' });
+    function checkMarkersEvents(retry = false, tries = 0, reclick, targetNode, toIndex = Math.random().toString(36).slice(2)) {
+        if (!W.editingMediator.attributes.editingHouseNumbers) {
+            if (retry && (tries < 50))
+                _timeouts.checkMarkersEvents[toIndex] = window.setTimeout(checkMarkersEvents, 100, true, ++tries, reclick, targetNode, toIndex);
+            else if (retry)
+                logError('Timeout (5 sec) exceeded waiting to enter editing house numbers mode.');
+            return;
+        }
+        const setMarkerEvent = function (marker, markerType, cbType, cbFunc, cbBind) {
+            hideTooltip();
+            if (markerType === 'input') {
+                marker.events.register(cbType, null, cbFunc);
+            }
+            else if (markerType === 'drag-handle') {
+                const dragHandle = marker.icon.div.children[0]?.querySelector('.drag-handle');
+                if (dragHandle && !dragHandle.dataset.hnnpHasListeners) {
+                    dragHandle.addEventListener('mousedown', cbFunc.bind(cbBind));
+                    dragHandle.addEventListener('mouseup', cbFunc.bind(cbBind));
+                    dragHandle.dataset.hnnpHasListeners = true;
+                }
+            }
+            else if (markerType === 'fraction-point') {
+                marker.icon.div.addEventListener('mousedown', cbFunc.bind(cbBind));
+                marker.icon.div.addEventListener('mouseup', cbFunc.bind(cbBind));
+                marker.icon.div.dataset.hnnpHasListeners = true;
+            }
+        };
+        checkTimeout({ timeout: 'checkMarkersEvents', toIndex });
         if (_wmeHnLayer?.markers?.length > 0) {
-            if (!_wmeHnLayer.markers[0].events.listeners['click:input'].some((callbackFn) => callbackFn.func === markerEvent))
-                setMarkersEvents(reclick, targetNode);
+            const checkFunc = (cbFunc) => cbFunc.func === markerEvent;
+            _wmeHnLayer.markers.forEach((obj) => {
+                if (obj.input) {
+                    if (!obj.events.listeners['click:input']?.some(checkFunc))
+                        setMarkerEvent(obj, 'input', 'click:input', markerEvent);
+                    if (!obj.events.listeners.delete?.some(checkFunc))
+                        setMarkerEvent(obj, 'input', 'delete', markerEvent);
+                    if (!obj.icon.div.querySelector('.drag-handle')?.dataset.hnnpHasListeners)
+                        setMarkerEvent(obj, 'drag-handle', null, markerEvent, obj);
+                }
+                else if (obj.icon.div.classList.contains('fraction-point')) {
+                    if (!obj.icon.div.dataset.hnnpHasListeners)
+                        setMarkerEvent(obj, 'fraction-point', null, markerEvent, obj);
+                }
+            });
+            if (reclick) {
+                const tmpNode = targetNode?.querySelector('input.number');
+                tmpNode?.focus();
+                tmpNode?.setSelectionRange(tmpNode.selectionStart, tmpNode.selectionStart);
+            }
         }
         else if (retry && (tries < 50)) {
-            _timeouts.checkMarkersEvents = window.setTimeout(checkMarkersEvents, 100, true, ++tries, reclick, targetNode);
+            _timeouts.checkMarkersEvents[toIndex] = window.setTimeout(checkMarkersEvents, 100, true, ++tries, reclick, targetNode, toIndex);
         }
         else if (retry) {
             logError('Timeout (5 sec) exceeded waiting for markers to popuplate within checkMarkersEvents');
@@ -635,7 +741,7 @@
         }
         else if (this.action === 'objects-state-deleted') {
             evt.forEach((obj) => {
-                if (_segmentsToRemove.indexOf(obj.getID()) === -1)
+                if (!_segmentsToRemove.includes(obj.getID()))
                     _segmentsToRemove.push(obj.getID());
             });
         }
@@ -659,7 +765,7 @@
     function objectsChangedHNs(evt) {
         if (!evt || preventProcess())
             return;
-        if ((evt.length === 1) && evt[0].getSegmentId() && (_segmentsToProcess.indexOf(evt[0].getSegmentId()) === -1))
+        if ((evt.length === 1) && evt[0].getSegmentId() && !_segmentsToProcess.includes(evt[0].getSegmentId()))
             _segmentsToProcess.push(evt[0].getSegmentId());
         checkMarkersEvents();
     }
@@ -667,7 +773,7 @@
     function objectsStateDeletedHNs(evt) {
         if (!evt || preventProcess())
             return;
-        if ((evt.length === 1) && evt[0].getSegmentId() && (_segmentsToProcess.indexOf(evt[0].getSegmentId()) === -1))
+        if ((evt.length === 1) && evt[0].getSegmentId() && !_segmentsToProcess.includes(evt[0].getSegmentId()))
             _segmentsToProcess.push(evt[0].getSegmentId());
         removeHNs(evt);
         checkMarkersEvents();
@@ -676,7 +782,7 @@
     function objectsAddedHNs(evt) {
         if (!evt || preventProcess())
             return;
-        if ((evt.length === 1) && evt[0].getSegmentId() && (_segmentsToProcess.indexOf(evt[0].getSegmentId()) === -1))
+        if ((evt.length === 1) && evt[0].getSegmentId() && !_segmentsToProcess.includes(evt[0].getSegmentId()))
             _segmentsToProcess.push(evt[0].getSegmentId());
         checkMarkersEvents(true, 0);
     }
@@ -694,16 +800,17 @@
         if (!evt || preventProcess())
             return;
         if ((evt.type === 'afterclearactions') || (evt.type === 'noActions')) {
-            processSegmentsToRemove();
+            processSegmentsToRemove(true, [..._segmentsToProcess]);
+            processSegs('afterclearactions', W.model.segments.getByIds([..._segmentsToProcess]), true);
         }
-        else if (evt.action?._description?.indexOf('Deleted house number') > -1) {
+        else if (evt.action?._description?.includes('Deleted house number')) {
             if (evt.type === 'afterundoaction')
                 drawHNs([evt.action.object]);
             else
                 removeHNs([evt.action.object]);
-            setMarkersEvents();
+            checkMarkersEvents();
         }
-        else if (evt.action?._description?.indexOf('Updated house number') > -1) {
+        else if (evt.action?._description?.includes('Updated house number')) {
             const tempEvt = _.cloneDeep(evt);
             if (evt.type === 'afterundoaction') {
                 if (tempEvt.action.newAttributes?.number)
@@ -715,26 +822,26 @@
             }
             removeHNs([tempEvt.action.object]);
             drawHNs([evt.action.object]);
-            setMarkersEvents();
+            checkMarkersEvents();
         }
-        else if (evt.action?._description?.indexOf('Added house number') > -1) {
+        else if (evt.action?._description?.includes('Added house number')) {
             if (evt.type === 'afterundoaction')
                 removeHNs([evt.action.houseNumber]);
             else
                 drawHNs([evt.action.houseNumber]);
         }
-        else if (evt.action?._description?.indexOf('Moved house number') > -1) {
+        else if (evt.action?._description?.includes('Moved house number')) {
             drawHNs([evt.action.newHouseNumber]);
         }
         else if (evt.action?.houseNumber) {
             drawHNs((evt.action.newHouseNumber ? [evt.action.newHouseNumber] : [evt.action.houseNumber]));
-            setMarkersEvents();
+            checkMarkersEvents();
         }
         checkMarkersEvents();
     }
 
     async function reloadClicked() {
-        if (preventProcess() || ($('div.w-icon.w-icon-refresh').attr('class').indexOf('disabled') > 0))
+        if (preventProcess() || document.querySelector('wz-button.overlay-button.reload-button').classList.contains('disabled'))
             return;
         await destroyAllHNs();
         processSegs('reload', W.model.segments.getByAttributes({ hasHNs: true }));
@@ -745,31 +852,24 @@
             _HNLayerObserver = new MutationObserver((mutationsList) => {
                 mutationsList.forEach((mutation) => {
                     if (mutation.type === 'attributes') {
-                        if ((mutation.oldValue?.indexOf('active') > -1) && (_holdFeatures.hn.length > 0) && ($('.active', _wmeHnLayer.div).length === 0))
+                        if (mutation.oldValue?.includes('active') && (_holdFeatures.hn.length > 0) && (_wmeHnLayer.div.querySelectorAll('.active').length === 0))
                             flushHeldFeatures();
-                        if ((mutation.oldValue?.indexOf('active') === -1) && mutation.target.classList.contains('active'))
+                        if (!mutation.oldValue?.indexOf('active') && mutation.target.classList.contains('active'))
                             checkMarkersEvents(true, 0, true, mutation.target);
-                        const $input = $('div.olLayerDiv.house-numbers-layer div.house-number div.content.active:not(".new") input.number');
-                        if ($input.val() === '')
-                            $input.on('change', () => { setMarkersEvents(); }).select();
+                        const input = document.querySelector('div.olLayerDiv.house-numbers-layer div.house-number div.content.active:not(.new) input.number');
+                        if (input?.value === '')
+                            input.addEventListener('change', checkMarkersEvents);
                     }
                 });
             });
             _saveButtonObserver = new MutationObserver((mutationsList) => {
                 if ((W.model.actionManager._redoStack.length === 0)
-                    // 2023.04.06.01: Production save button observer mutations
-                    && (mutationsList.some((mutation) => (mutation.attributeName === 'class')
-                            && mutation.target.classList.contains('waze-icon-save')
-                            && (mutation.oldValue.indexOf('ItemDisabled') === -1)
-                            && mutation.target.classList.contains('ItemDisabled'))
-                    // 2023.04.06.01: Beta save button observer mutations
-                        || mutationsList.some((mutation) => ((mutation.attributeName === 'disabled')
-                            && (mutation.oldValue === 'false')
-                            && (mutation.target.attributes.disabled.value === 'true')))
-                    )
+                    && mutationsList.some((mutation) => ((mutation.attributeName === 'disabled')
+                            && (mutation.oldValue === 'true')
+                            && (mutation.target.disabled === true)))
                 ) {
                     if (W.editingMediator.attributes.editingHouseNumbers)
-                        processSegs('afterSave', W.model.segments.getByIds(_segmentsToProcess), true);
+                        processSegs('afterSave', W.model.segments.getByIds([..._segmentsToProcess]), true);
                     else
                         processSegmentsToRemove();
                 }
@@ -779,7 +879,7 @@
             });
             _saveButtonObserver.observing = true;
             W.accelerators.events.on({ reloadData: destroyAllHNs });
-            $('#overlay-buttons, #edit-buttons').on('click', 'div.reload-button-region', reloadClicked);
+            document.querySelector('wz-button.overlay-button.reload-button').addEventListener('click', reloadClicked);
             W.model.segments.on('objectsadded', segmentsEvent, { action: 'objectsadded' });
             W.model.segments.on('objectsremoved', segmentsEvent, { action: 'objectsremoved' });
             W.model.segments.on('objectssynced', segmentsEvent, { action: 'objectssynced' });
@@ -804,7 +904,7 @@
             _HNLayerObserver = undefined;
             _saveButtonObserver = undefined;
             W.accelerators.events.on('reloadData', null, destroyAllHNs);
-            $('#overlay-buttons, #edit-buttons').off('click', 'div.reload-button-region', reloadClicked);
+            document.querySelector('wz-button.overlay-button.reload-button').removeEventListener('click', reloadClicked);
             W.model.segments.off('objectsadded', segmentsEvent, { action: 'objectsadded' });
             W.model.segments.off('objectsremoved', segmentsEvent, { action: 'objectsremoved' });
             W.model.segments.off('objectschanged', segmentsEvent, { action: 'objectschanged' });
@@ -828,12 +928,12 @@
         return Promise.resolve();
     }
 
-    function enterHNEditMode(evt) {
-        if (evt?.data?.segment) {
-            if (evt.data.moveMap)
-                W.map.setCenter(new OpenLayers.LonLat(evt.data.segment.getCenter().x, evt.data.segment.getCenter().y), W.map.getZoom());
-            W.selectionManager.setSelectedModels(evt.data.segment);
-            $('#segment-edit-general .edit-house-numbers').click();
+    function enterHNEditMode(segment, moveMap) {
+        if (segment) {
+            if (moveMap)
+                W.map.setCenter(new OpenLayers.LonLat(segment.getCenter().x, segment.getCenter().y), W.map.getZoom());
+            W.selectionManager.setSelectedModels(segment);
+            document.querySelector('#segment-edit-general .edit-house-numbers').dispatchEvent(new MouseEvent('click', { bubbles: true }));
         }
     }
 
@@ -842,65 +942,77 @@
             return;
         if (evt?.object?.featureId) {
             checkTooltip();
+            let moveMap = false;
             const { segmentId, hnNumber } = evt.object;
             if (_popup.inUse && (_popup.hnNumber === hnNumber) && (_popup.segmentId === segmentId))
                 return;
             const segment = W.model.segments.getObjectById(segmentId),
                 street = W.model.streets.getObjectById(segment.attributes.primaryStreetID),
                 popupPixel = W.map.getPixelFromLonLat(evt.object.lonlat),
-                htmlOut = ''
-                + '<div id="hnNavPointsTooltipDiv-tooltip" class="tippy-box" data-state="hidden" tabindex="-1" data-theme="light-border" data-animation="fade" role="tooltip" data-placement="top" '
-                + '    style="max-width: 350px; transition-duration:300ms;">'
-                + ' <div id="hnNavPointsTooltipDiv-content" class="tippy-content" data-state="hidden" style="transition-duration: 300ms;">'
-                + '     <div>'
-                + '         <div class="house-number-marker-tooltip">'
-                + `             <div class="title" dir="auto">${hnNumber} ${(street ? street.name : '')}</div>`
-                + `             <div class="edit-button fa fa-pencil" id="hnNavPointsTooltipDiv-edit" ${(segment.canEditHouseNumbers() ? '' : ' style="display:none"')}></div>`
-                + '         </div>'
-                + '     </div>'
-                + ' </div>'
-                + ' <div id="hnNavPointsTooltipDiv-arrow" class="tippy-arrow" style="position: absolute; left: 0px;"></div>'
-                + '</div>';
-            _$hnNavPointsTooltipDiv.html(htmlOut);
+                divElemRoot = createElem('div', {
+                    id: 'hnNavPointsTooltipDiv-tooltip',
+                    class: 'tippy-box',
+                    'data-state': 'hidden',
+                    tabindex: '-1',
+                    'data-theme': 'light-border',
+                    'data-animation': 'fade',
+                    role: 'tooltip',
+                    'data-placement': 'top',
+                    style: 'max-width: 350px; transition-duration:300ms;'
+                }),
+                invokeEnterHNEditMode = () => enterHNEditMode(segment, moveMap),
+                divElemRootDivDiv = createElem('div', { class: 'house-number-marker-tooltip' });
+            divElemRootDivDiv.appendChild(createElem('div', { class: 'title', dir: 'auto', textContent: `${hnNumber} ${(street ? street.name : '')}` }));
+            divElemRootDivDiv.appendChild(createElem('div', {
+                id: 'hnNavPointsTooltipDiv-edit', class: 'edit-button fa fa-pencil', style: segment.canEditHouseNumbers() ? '' : 'display:none;'
+            }, [{ click: invokeEnterHNEditMode }]));
+            const divElemRootDiv = createElem('div', {
+                id: 'hnNavPointsTooltipDiv-content', class: 'tippy-content', 'data-state': 'hidden', style: 'transition-duration: 300ms;'
+            });
+            divElemRootDiv.appendChild(divElemRootDivDiv);
+            divElemRoot.appendChild(divElemRootDiv);
+            divElemRoot.appendChild(createElem('div', {
+                id: 'hnNavPointsTooltipDiv-arrow', class: 'tippy-arrow', style: 'position: absolute; left: 0px;'
+            }));
+            _hnNavPointsTooltipDiv.replaceChildren(divElemRoot);
             popupPixel.origX = popupPixel.x;
-            const popupWidthHalf = (_$hnNavPointsTooltipDiv.width() / 2);
+            const popupWidthHalf = (_hnNavPointsTooltipDiv.clientWidth / 2);
             let arrowOffset = (popupWidthHalf - 15),
-                dataPlacement = 'top',
-                moveMap = false;
+                dataPlacement = 'top';
             popupPixel.x = ((popupPixel.x - popupWidthHalf + 5) > 0) ? (popupPixel.x - popupWidthHalf + 5) : 10;
             if (popupPixel.x === 10)
                 arrowOffset = popupPixel.origX - 22;
-            if ((popupPixel.x + (popupWidthHalf * 2)) > $('#map')[0].clientWidth) {
-                popupPixel.x = (popupPixel.origX - _$hnNavPointsTooltipDiv.width() + 8);
-                arrowOffset = (_$hnNavPointsTooltipDiv.width() - 30);
+            if ((popupPixel.x + (popupWidthHalf * 2)) > W.map.getEl()[0].clientWidth) {
+                popupPixel.x = (popupPixel.origX - _hnNavPointsTooltipDiv.clientWidth + 8);
+                arrowOffset = (_hnNavPointsTooltipDiv.clientWidth - 30);
                 moveMap = true;
             }
-            if (popupPixel.y - _$hnNavPointsTooltipDiv.children().toArray().reduce((height, elem) => height + $(elem).outerHeight(true), 0) < 0) {
+            if (popupPixel.y - [..._hnNavPointsTooltipDiv.children].reduce((height, elem) => height + elem.getBoundingClientRect().height, 0) < 0) {
                 popupPixel.y += 14;
                 dataPlacement = 'bottom';
             }
             else {
-                popupPixel.y -= (_$hnNavPointsTooltipDiv.children().toArray().reduce((height, elem) => height + $(elem).outerHeight(true), 0) + 14);
+                popupPixel.y -= ([..._hnNavPointsTooltipDiv.children].reduce((height, elem) => height + elem.getBoundingClientRect().height, 0) + 14);
             }
-            $('#hnNavPointsTooltipDiv-edit').on('click', { segment, moveMap }, enterHNEditMode);
-            _$hnNavPointsTooltipDiv.css({ transform: `translate(${Math.round(popupPixel.x)}px, ${Math.round(popupPixel.y)}px)` });
-            $('#hnNavPointsTooltipDiv-arrow').css({ transform: `translate(${Math.max(0, Math.round(arrowOffset))}px, 0px)` });
-            $('#hnNavPointsTooltipDiv-tooltip').attr('data-placement', dataPlacement).attr('data-state', 'visible');
-            $('#hnNavPointsTooltipDiv-content').attr('data-state', 'visible');
+            _hnNavPointsTooltipDiv.style.transform = `translate(${Math.round(popupPixel.x)}px, ${Math.round(popupPixel.y)}px)`;
+            _hnNavPointsTooltipDiv.querySelector('#hnNavPointsTooltipDiv-arrow').style.transform = `translate(${Math.max(0, Math.round(arrowOffset))}px, 0px)`;
+            _hnNavPointsTooltipDiv.querySelector('#hnNavPointsTooltipDiv-tooltip').setAttribute('data-placement', dataPlacement);
+            _hnNavPointsTooltipDiv.querySelector('#hnNavPointsTooltipDiv-tooltip').setAttribute('data-state', 'visible');
+            _hnNavPointsTooltipDiv.querySelector('#hnNavPointsTooltipDiv-content').setAttribute('data-state', 'visible');
             _popup = { segmentId, hNumber: hnNumber, inUse: true };
         }
     }
 
     function stripTooltipHTML() {
         checkTimeout({ timeout: 'stripTooltipHTML' });
-        _$hnNavPointsTooltipDiv.html('');
+        _hnNavPointsTooltipDiv.replaceChildren();
         _popup = { segmentId: -1, hnNumber: -1, inUse: false };
     }
 
     function hideTooltip() {
         checkTimeout({ timeout: 'hideTooltip' });
-        $('#hnNavPointsTooltipDiv-content').attr('data-state', 'hidden');
-        $('#hnNavPointsTooltipDiv-tooltip').attr('data-state', 'hidden');
+        _hnNavPointsTooltipDiv.querySelector('#hnNavPointsTooltipDiv-content')?.setAttribute('data-state', 'hidden');
+        _hnNavPointsTooltipDiv.querySelector('#hnNavPointsTooltipDiv-tooltip')?.setAttribute('data-state', 'hidden');
         _timeouts.stripTooltipHTML = window.setTimeout(stripTooltipHTML, 400);
     }
 
@@ -909,7 +1021,7 @@
             return;
         checkTimeout({ timeout: 'hideTooltip' });
         const parentsArr = evt.toElement?.offsetParent ? [evt.toElement.offsetParent, evt.toElement.offsetParent.offSetParent] : [];
-        if (evt.toElement && ((parentsArr.indexOf(_HNNavPointsNumbersLayer.div) > -1) || (parentsArr.indexOf(_$hnNavPointsTooltipDiv[0]) > -1)))
+        if (evt.toElement && (parentsArr.includes(_HNNavPointsNumbersLayer?.div) || parentsArr.includes(_hnNavPointsTooltipDiv)))
             return;
         _timeouts.hideTooltip = window.setTimeout(hideTooltip, 100, evt);
     }
@@ -942,30 +1054,12 @@
     function checkHnNavpointsVersion() {
         if (_IS_ALPHA_VERSION)
             return;
+        let updateMonitor;
         try {
-            const metaUrl = _IS_BETA_VERSION ? dec(_BETA_META_URL) : _PROD_META_URL;
-            GM_xmlhttpRequest({
-                url: metaUrl,
-                onload(res) {
-                    const latestVersion = res.responseText.match(/@version\s+(.*)/)[1];
-                    if ((latestVersion > _SCRIPT_VERSION) && (latestVersion > (_lastVersionChecked || '0'))) {
-                        _lastVersionChecked = latestVersion;
-                        WazeWrap.Alerts.info(
-                            _SCRIPT_LONG_NAME,
-                            `<a href="${(_IS_BETA_VERSION ? dec(_BETA_URL) : _PROD_URL)}" target = "_blank">Version ${latestVersion}</a> is available.<br>Update now to get the latest features and fixes.`,
-                            true,
-                            false
-                        );
-                    }
-                },
-                onerror(res) {
-                    // Silently fail with an error message in the console.
-                    logError('Upgrade version check:', res);
-                }
-            });
+            updateMonitor = new WazeWrap.Alerts.ScriptUpdateMonitor(_SCRIPT_LONG_NAME, _SCRIPT_VERSION, (_IS_BETA_VERSION ? dec(_BETA_DL_URL) : _PROD_DL_URL), GM_xmlhttpRequest);
+            updateMonitor.start();
         }
         catch (err) {
-            // Silently fail with an error message in the console.
             logError('Upgrade version check:', err);
         }
     }
@@ -998,15 +1092,8 @@
                     })
                 })
             },
-            buildCheckBox = (id = '', label = '', checked = true, title = '', disabled = false) => `<wz-checkbox id="${id}" title="${title}"`
-                + `${(disabled ? ' disabled' : '')}${(checked ? ' checked' : '')}`
-                + `>${label}</wz-checkbox>`,
-            buildTextBox = (id = '', label = '', value = '', placeHolder = '', maxlength = 0, autoComplete = 'off', title = '', disabled = false) => `<wz-text-input id="${id}" label="${label}"`
-                + ` value=${value} placeholder="${placeHolder}" maxlength="${maxlength}" autocomplete="${autoComplete}" title="${title}"`
-                + `${(disabled ? ' disabled' : '')}`
-                + '></wz-text-input>',
             handleCheckboxToggle = function () {
-                const settingName = $(this)[0].id.substr(14);
+                const settingName = this.id.substring(14);
                 if (settingName === 'enableTooltip') {
                     if (!this.checked)
                         _HNNavPointsNumbersLayer.clearMarkers();
@@ -1028,9 +1115,9 @@
                     processSegs('settingChanged', W.model.segments.getByAttributes({ hasHNs: true }), true, 0);
             },
             handleTextboxChange = function () {
-                const newVal = Math.min(22, Math.max(16, parseInt(this.value)));
-                if ((newVal !== _settings.disableBelowZoom) || (parseInt(this.value) !== newVal)) {
-                    if (newVal !== parseInt(this.value))
+                const newVal = Math.min(22, Math.max(16, +this.value));
+                if ((newVal !== _settings.disableBelowZoom) || (+this.value !== newVal)) {
+                    if (newVal !== +this.value)
                         this.value = newVal;
                     _settings.disableBelowZoom = newVal;
                     saveSettingsToStorage();
@@ -1039,7 +1126,13 @@
                     else if (_settings.hnLines || _settings.hnNumbers)
                         processSegs('settingChanged', W.model.segments.getByAttributes({ hasHNs: true }), true, 0);
                 }
-            };
+            },
+            buildCheckbox = (id = '', textContent = '', checked = true, title = '', disabled = false) => createElem('wz-checkbox', {
+                id, title, disabled, checked, textContent
+            }, [{ change: handleCheckboxToggle }]),
+            buildTextBox = (id = '', label = '', value = '', placeholder = '', maxlength = 0, autocomplete = 'off', title = '', disabled = false) => createElem('wz-text-input', {
+                id, label, value, placeholder, maxlength, autocomplete, title, disabled
+            }, [{ change: handleTextboxChange }]);
         await loadSettingsFromStorage();
         WazeWrap.Interface.AddLayerCheckbox('display', 'HN NavPoints', _settings.hnLines, hnLayerToggled);
         WazeWrap.Interface.AddLayerCheckbox('display', 'HN NavPoints Numbers', _settings.hnNumbers, hnNumbersLayerToggled);
@@ -1054,14 +1147,14 @@
         W.map.addLayers([_HNNavPointsLayer, _HNNavPointsNumbersLayer]);
         _HNNavPointsLayer.setVisibility(_settings.hnLines);
         _HNNavPointsNumbersLayer.setVisibility(_settings.hnNumbers);
-        window.addEventListener('beforeunload', () => { checkShortcutsChanged(); }, false);
+        window.addEventListener('beforeunload', checkShortcutsChanged, false);
         new WazeWrap.Interface.Shortcut(
             'toggleHNNavPointsShortcut',
             'Toggle HN NavPoints layer',
             'layers',
             'layersToggleHNNavPoints',
             _settings.toggleHNNavPointsShortcut,
-            () => { $('#layer-switcher-item_hn_navpoints').click(); },
+            () => { document.getElementById('layer-switcher-item_hn_navpoints').dispatchEvent(new MouseEvent('click', { bubbles: true })); },
             null
         ).add();
         new WazeWrap.Interface.Shortcut(
@@ -1070,42 +1163,64 @@
             'layers',
             'layersToggleHNNavPointsNumbers',
             _settings.toggleHNNavPointsNumbersShortcut,
-            () => { $('#layer-switcher-item_hn_navpoints_numbers').click(); },
+            () => { document.getElementById('layer-switcher-item_hn_navpoints_numbers').dispatchEvent(new MouseEvent('click', { bubbles: true })); },
             null
         ).add();
         const { tabLabel, tabPane } = W.userscripts.registerSidebarTab('HN-NavPoints');
-        tabLabel.innerHTML = '<i class="w-icon w-icon-location"></i>';
+        tabLabel.appendChild(createElem('i', { class: 'w-icon w-icon-location' }));
         tabLabel.title = _SCRIPT_SHORT_NAME;
-        tabPane.innerHTML = `<h4><b>${_SCRIPT_LONG_NAME}</b></h4>`
-            + `<h6 style="margin-top:0px">${_SCRIPT_VERSION}</h6>`
-            + '<form class="attributes-form side-panel-section">'
-            + '<div class="form-group">'
-            + `${buildTextBox('HNNavPoints_disableBelowZoom', 'Disable when zoom level is (<) less than:', _settings.disableBelowZoom, '', 2, 'off', 'Disable NavPoints and house numbers when zoom level is less than specified number.\r\nMinimum: 16\r\nDefault: 17', false)}`
-            + `${buildCheckBox('HNNavPoints_cbenableTooltip', 'Enable tooltip', _settings.enableTooltip, 'Enable tooltip when mousing over house numbers.\r\nWarning: This may cause performance issues.', false)}`
-            + `${buildCheckBox('HNNavPoints_cbkeepHNLayerOnTop', 'Keep HN layer on top', _settings.keepHNLayerOnTop, 'Keep house numbers layer on top of all other layers.', false)}`
-            + '</div>'
-            + '</form>'
-            + '<label class="control-label">Color Legend</label>'
-            + '<div style="margin:0 10px 0 10px; width:130px; text-align:center; font-size:12px; background:black; font-weight:600;">'
-            + ' <div style="text-shadow:0 0 3px white,0 0 3px white,0 0 3px white,0 0 3px white,0 0 3px white,0 0 3px white,0 0 3px white,0 0 3px white,0 0 3px white,0 0 3px white;">Touched</div>'
-            + ' <div style="text-shadow:0 0 3px orange,0 0 3px orange,0 0 3px orange,0 0 3px orange,0 0 3px orange,0 0 3px orange,0 0 3px orange,0 0 3px orange,0 0 3px orange,0 0 3px orange;'
-            + '     ">Touched forced</div>'
-            + ' <div style="text-shadow:0 0 3px yellow,0 0 3px yellow,0 0 3px yellow, 0 0 3px yellow,0 0 3px yellow,0 0 3px yellow,0 0 3px yellow,0 0 3px yellow,0 0 3px yellow,0 0 3px yellow;'
-            + '     ">Untouched</div>'
-            + ' <div style="text-shadow:0 0 3px red,0 0 3px red,0 0 3px red,0 0 3px red,0 0 3px red,0 0 3px red,0 0 3px red,0 0 3px red,0 0 3px red,0 0 3px red;">Untouched forced</div>'
-            + '</div></div>';
+        const docFrags = document.createDocumentFragment();
+        docFrags.appendChild(createElem('h4', { style: 'font-weight:bold;', textContent: _SCRIPT_LONG_NAME }));
+        docFrags.appendChild(createElem('h6', { style: 'margin-top:0px;', textContent: _SCRIPT_VERSION }));
+        let divElemRoot = createElem('div', { class: 'form-group' });
+        divElemRoot.appendChild(buildTextBox(
+            'HNNavPoints_disableBelowZoom',
+            'Disable when zoom level is (<) less than:',
+            _settings.disableBelowZoom,
+            '',
+            2,
+            'off',
+            'Disable NavPoints and house numbers when zoom level is less than specified number.\r\nMinimum: 16\r\nDefault: 17',
+            false
+        ));
+        divElemRoot.appendChild(buildCheckbox(
+            'HNNavPoints_cbenableTooltip',
+            'Enable tooltip',
+            _settings.enableTooltip,
+            'Enable tooltip when mousing over house numbers.\r\nWarning: This may cause performance issues.',
+            false
+        ));
+        divElemRoot.appendChild(buildCheckbox('HNNavPoints_cbkeepHNLayerOnTop', 'Keep HN layer on top', _settings.keepHNLayerOnTop, 'Keep house numbers layer on top of all other layers.', false));
+        const formElem = createElem('form', { class: 'attributes-form side-panel-section' });
+        formElem.appendChild(divElemRoot);
+        docFrags.appendChild(formElem);
+        docFrags.appendChild(createElem('label', { class: 'control-label', textContent: 'Color legend' }));
+        divElemRoot = createElem('div', { style: 'margin:0 10px 0 10px; width:130px; text-align:center; font-size:12px; background:black; font-weight:600;' });
+        divElemRoot.appendChild(createElem('div', {
+            style: 'text-shadow:0 0 3px white,0 0 3px white,0 0 3px white,0 0 3px white,0 0 3px white,0 0 3px white,0 0 3px white,0 0 3px white,0 0 3px white,0 0 3px white;', textContent: 'Touched'
+        }));
+        divElemRoot.appendChild(createElem('div', {
+            style: 'text-shadow:0 0 3px orange,0 0 3px orange,0 0 3px orange,0 0 3px orange,0 0 3px orange,0 0 3px orange,0 0 3px orange,0 0 3px orange,0 0 3px orange,0 0 3px orange;',
+            textContent: 'Touched forced'
+        }));
+        divElemRoot.appendChild(createElem('div', {
+            style: 'text-shadow:0 0 3px yellow,0 0 3px yellow,0 0 3px yellow, 0 0 3px yellow,0 0 3px yellow,0 0 3px yellow,0 0 3px yellow,0 0 3px yellow,0 0 3px yellow,0 0 3px yellow;',
+            textContent: 'Untouched'
+        }));
+        divElemRoot.appendChild(createElem('div', {
+            style: 'text-shadow:0 0 3px red,0 0 3px red,0 0 3px red,0 0 3px red,0 0 3px red,0 0 3px red,0 0 3px red,0 0 3px red,0 0 3px red,0 0 3px red;', textContent: 'Untouched forced'
+        }));
+        docFrags.appendChild(divElemRoot);
+        tabPane.appendChild(docFrags);
         tabPane.id = 'sidepanel-hn-navpoints';
         await W.userscripts.waitForElementConnected(tabPane);
-        $('#HNNavPoints_disableBelowZoom').off().on('focusout', handleTextboxChange);
-        $('wz-checkbox[id^="HNNavPoints_cb"]').off().on('click', handleCheckboxToggle);
-        if (!_$hnNavPointsTooltipDiv) {
-            $('#map').append(
-                '<div data-tippy-root id="hnNavPointsTooltipDiv" style="z-index:9999; visibility:visible; position:absolute; inset: auto auto 0px 0px; '
-            + 'margin: 0px; top: 0px; left: 0px;"></div>'
-            );
-            _$hnNavPointsTooltipDiv = $('#hnNavPointsTooltipDiv');
-            _$hnNavPointsTooltipDiv.on('mouseleave', null, hideTooltipDelay);
-            _$hnNavPointsTooltipDiv.on('mouseenter', null, checkTooltip);
+        if (!_hnNavPointsTooltipDiv) {
+            _hnNavPointsTooltipDiv = createElem('div', {
+                id: 'hnNavPointsTooltipDiv',
+                style: 'z-index:9999; visibility:visible; position:absolute; inset: auto auto 0px 0px; margin: 0px; top: 0px; left: 0px;',
+                'data-tippy-root': false
+            }, [{ mouseenter: checkTooltip }, { mouseleave: hideTooltipDelay }]);
+            W.map.getEl()[0].appendChild(_hnNavPointsTooltipDiv);
         }
         await initBackgroundTasks('enable');
         checkLayerIndex();
