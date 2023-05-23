@@ -2,7 +2,7 @@
 // @name            WME HN NavPoints (beta)
 // @namespace       https://greasyfork.org/users/166843
 // @description     Shows navigation points of all house numbers in WME
-// @version         2023.05.11.01
+// @version         2023.05.23.01
 // @author          dBsooner
 // @grant           GM_xmlhttpRequest
 // @connect         greasyfork.org
@@ -37,7 +37,8 @@
         _ALERT_UPDATE = true,
         _SCRIPT_VERSION = GM_info.script.version.toString(),
         _SCRIPT_VERSION_CHANGES = ['CHANGE: Reverted to 100% vanilla JavaScript, removing reliance on jQuery.',
-            'CHANGE: Switch to WazeWrap for script update checking.'
+            'CHANGE: Switch to WazeWrap for script update checking.',
+            'CHANGE: (2023.05.23.01) WME v2.162-3 changes compliance.'
         ],
         _DEBUG = /[βΩ]/.test(_SCRIPT_SHORT_NAME),
         _LOAD_BEGIN_TIME = performance.now(),
@@ -874,7 +875,7 @@
                         processSegmentsToRemove();
                 }
             });
-            _saveButtonObserver.observe(document.querySelector('#toolbar .js-save-popover-target'), {
+            _saveButtonObserver.observe(document.getElementById('save-button'), {
                 childList: false, attributes: true, attributeOldValue: true, characterData: false, characterDataOldValue: false, subtree: false
             });
             _saveButtonObserver.observing = true;
@@ -931,7 +932,7 @@
     function enterHNEditMode(segment, moveMap) {
         if (segment) {
             if (moveMap)
-                W.map.setCenter(new OpenLayers.LonLat(segment.getCenter().x, segment.getCenter().y), W.map.getZoom());
+                W.map.setCenter({ lon: segment.getCenter().x, lat: segment.getCenter().y }, W.map.getZoom());
             W.selectionManager.setSelectedModels(segment);
             document.querySelector('#segment-edit-general .edit-house-numbers').dispatchEvent(new MouseEvent('click', { bubbles: true }));
         }
@@ -1167,7 +1168,7 @@
             null
         ).add();
         const { tabLabel, tabPane } = W.userscripts.registerSidebarTab('HN-NavPoints');
-        tabLabel.appendChild(createElem('i', { class: 'w-icon w-icon-location' }));
+        tabLabel.appendChild(createElem('i', { class: 'w-icon w-icon-location', style: 'font-size:15px;padding-top:4px;' }));
         tabLabel.title = _SCRIPT_SHORT_NAME;
         const docFrags = document.createDocumentFragment();
         docFrags.appendChild(createElem('h4', { style: 'font-weight:bold;', textContent: _SCRIPT_LONG_NAME }));
