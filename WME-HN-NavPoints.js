@@ -2,7 +2,7 @@
 // @name            WME HN NavPoints
 // @namespace       https://greasyfork.org/users/166843
 // @description     Shows navigation points of all house numbers in WME
-// @version         2023.05.23.01
+// @version         2023.06.15.01
 // @author          dBsooner
 // @grant           GM_xmlhttpRequest
 // @connect         greasyfork.org
@@ -36,10 +36,7 @@
         _BETA_DL_URL = 'YUhSMGNITTZMeTluY21WaGMzbG1iM0pyTG05eVp5OXpZM0pwY0hSekx6TTVNRFUzTXkxM2JXVXRhRzR0Ym1GMmNHOXBiblJ6TFdKbGRHRXZZMjlrWlM5WFRVVWxNakJJVGlVeU1FNWhkbEJ2YVc1MGN5VXlNQ2hpWlhSaEtTNTFjMlZ5TG1weg==',
         _ALERT_UPDATE = true,
         _SCRIPT_VERSION = GM_info.script.version.toString(),
-        _SCRIPT_VERSION_CHANGES = ['CHANGE: Reverted to 100% vanilla JavaScript, removing reliance on jQuery.',
-            'CHANGE: Switch to WazeWrap for script update checking.',
-            'CHANGE: (2023.05.23.01) WME v2.162-3 changes compliance.'
-        ],
+        _SCRIPT_VERSION_CHANGES = ['BUGFIX: Keyboard shortcuts not surviving reload.'],
         _DEBUG = /[βΩ]/.test(_SCRIPT_SHORT_NAME),
         _LOAD_BEGIN_TIME = performance.now(),
         _elems = {
@@ -169,6 +166,23 @@
     function saveSettingsToStorage() {
         checkTimeout({ timeout: 'saveSettingsToStorage' });
         if (localStorage) {
+            ['toggleHNNavPointsShortcut', 'toggleHNNavPointsNumbersShortcut'].forEach((k) => {
+                let keys = '';
+                const { shortcut } = W.accelerators.Actions[k];
+                if (shortcut) {
+                    if (shortcut.altKey)
+                        keys += 'A';
+                    if (shortcut.shiftKey)
+                        keys += 'S';
+                    if (shortcut.ctrlKey)
+                        keys += 'C';
+                    if (keys !== '')
+                        keys += '+';
+                    if (shortcut.keyCode)
+                        keys += shortcut.keyCode;
+                }
+                _settings[k] = keys;
+            });
             _settings.lastVersion = _SCRIPT_VERSION;
             _settings.lastSaved = Date.now();
             localStorage.setItem(_SETTINGS_STORE_NAME, JSON.stringify(_settings));
@@ -191,35 +205,6 @@
             divElemRoot.appendChild(ulElem);
             WazeWrap.Interface.ShowScriptUpdate(_SCRIPT_SHORT_NAME, _SCRIPT_VERSION, divElemRoot.innerHTML, (_IS_BETA_VERSION ? dec(_BETA_DL_URL) : _PROD_DL_URL).replace(/code\/.*\.js/, ''), _FORUM_URL);
         }
-    }
-
-    function checkShortcutsChanged() {
-        let triggerSave = false;
-        ['toggleHNNavPointsShortcut', 'toggleHNNavPointsNumbersShortcut'].forEach((k) => {
-            let keys = '';
-            const { shortcut } = W.accelerators.Actions[k];
-            if (shortcut) {
-                if (shortcut.altKey)
-                    keys += 'A';
-                if (shortcut.shiftKey)
-                    keys += 'S';
-                if (shortcut.ctrlKey)
-                    keys += 'C';
-                if (keys !== '')
-                    keys += '+';
-                if (shortcut.keyCode)
-                    keys += shortcut.keyCode;
-            }
-            else {
-                keys = '';
-            }
-            if (_settings[k] !== keys) {
-                _settings[k] = '';
-                triggerSave = true;
-            }
-        });
-        if (triggerSave)
-            saveSettingsToStorage();
     }
 
     function checkTimeout(obj) {
@@ -1133,7 +1118,9 @@
             }, [{ change: handleCheckboxToggle }]),
             buildTextBox = (id = '', label = '', value = '', placeholder = '', maxlength = 0, autocomplete = 'off', title = '', disabled = false) => createElem('wz-text-input', {
                 id, label, value, placeholder, maxlength, autocomplete, title, disabled
-            }, [{ change: handleTextboxChange }]);
+            }, [{ change: handleTextboxChange }]),
+            toggleHNNavPoints = () => document.getElementById('layer-switcher-item_hn_navpoints').dispatchEvent(new MouseEvent('click', { bubbles: true })),
+            toggleHNNavPointsNumbers = () => document.getElementById('layer-switcher-item_hn_navpoints_numbers').dispatchEvent(new MouseEvent('click', { bubbles: true }));
         await loadSettingsFromStorage();
         WazeWrap.Interface.AddLayerCheckbox('display', 'HN NavPoints', _settings.hnLines, hnLayerToggled);
         WazeWrap.Interface.AddLayerCheckbox('display', 'HN NavPoints Numbers', _settings.hnNumbers, hnNumbersLayerToggled);
@@ -1148,14 +1135,14 @@
         W.map.addLayers([_HNNavPointsLayer, _HNNavPointsNumbersLayer]);
         _HNNavPointsLayer.setVisibility(_settings.hnLines);
         _HNNavPointsNumbersLayer.setVisibility(_settings.hnNumbers);
-        window.addEventListener('beforeunload', checkShortcutsChanged, false);
+        window.addEventListener('beforeunload', saveSettingsToStorage, false);
         new WazeWrap.Interface.Shortcut(
             'toggleHNNavPointsShortcut',
             'Toggle HN NavPoints layer',
             'layers',
             'layersToggleHNNavPoints',
             _settings.toggleHNNavPointsShortcut,
-            () => { document.getElementById('layer-switcher-item_hn_navpoints').dispatchEvent(new MouseEvent('click', { bubbles: true })); },
+            toggleHNNavPoints,
             null
         ).add();
         new WazeWrap.Interface.Shortcut(
@@ -1164,7 +1151,7 @@
             'layers',
             'layersToggleHNNavPointsNumbers',
             _settings.toggleHNNavPointsNumbersShortcut,
-            () => { document.getElementById('layer-switcher-item_hn_navpoints_numbers').dispatchEvent(new MouseEvent('click', { bubbles: true })); },
+            toggleHNNavPointsNumbers,
             null
         ).add();
         const { tabLabel, tabPane } = W.userscripts.registerSidebarTab('HN-NavPoints');
@@ -1229,7 +1216,7 @@
         showScriptInfoAlert();
         if (_scriptActive)
             processSegs('init', W.model.segments.getByAttributes({ hasHNs: true }));
-        setTimeout(checkShortcutsChanged, 10000);
+        setTimeout(saveSettingsToStorage, 10000);
     }
 
     function onWmeReady(tries = 1) {
