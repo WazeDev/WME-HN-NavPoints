@@ -2,7 +2,7 @@
 // @name            WME HN NavPoints (beta)
 // @namespace       https://greasyfork.org/users/166843
 // @description     Shows navigation points of all house numbers in WME
-// @version         2023.06.15.01
+// @version         2023.07.19.01
 // @author          dBsooner
 // @grant           GM_xmlhttpRequest
 // @connect         greasyfork.org
@@ -318,7 +318,10 @@
 
     function observeHNLayer() {
         if (W.editingMediator.attributes.editingHouseNumbers && !_HNLayerObserver.observing) {
-            [_wmeHnLayer] = W.map.getLayersByName('houseNumberMarkers');
+            // 2023.07.19 : Layer name changed in latest WME. Also a lot changed in the repository itself. This MO may be able to be replaced with a simpler
+            // function, if not removed all together.
+            // [_wmeHnLayer] = W.map.getLayersByName('houseNumberMarkers');
+            [_wmeHnLayer] = W.map.getLayersByName('houseNumbersMapEditorMarkers');
             _HNLayerObserver.observe(_wmeHnLayer.div, {
                 childList: false, subtree: true, attributes: true, attributeOldValue: true
             });
@@ -341,7 +344,8 @@
         else {
             _segmentsToProcess = W.selectionManager.getSegmentSelection().segments.map((segment) => segment.attributes.id);
             _segmentsToRemove = [];
-            checkMarkersEvents(true);
+            // 2023.07.19 : TEMPORARILY REMOVED. See note at checkMarkersEvent function. - dBsooner
+            // checkMarkersEvents(true);
         }
         _saveButtonObserver.disconnect();
         _saveButtonObserver.observe(document.getElementById('save-button'), {
@@ -623,6 +627,12 @@
         return false;
     }
 
+    /* 2023.07.19 : REMOVED TEMPORARILY.
+     *
+     * Possibly permenant. May not need to know when a marker is clicked. These
+     * were only there to remove the lines when a a drag handle or input was clicked. The object repo listeners / callbacks should
+     * modify the lines and numbers. - dBsooner
+     *
     function markerEvent(evt) {
         if (!evt || preventProcess())
             return;
@@ -710,6 +720,7 @@
             logError('Timeout (5 sec) exceeded waiting for markers to popuplate within checkMarkersEvents');
         }
     }
+    */
 
     function segmentsEvent(evt) {
         if (!evt || preventProcess())
@@ -753,7 +764,8 @@
             return;
         if ((evt.length === 1) && evt[0].getSegmentId() && !_segmentsToProcess.includes(evt[0].getSegmentId()))
             _segmentsToProcess.push(evt[0].getSegmentId());
-        checkMarkersEvents();
+        // 2023.07.19 : TEMPORARILY REMOVED. See note at checkMarkersEvent function. - dBsooner
+        // checkMarkersEvents();
     }
 
     function objectsStateDeletedHNs(evt) {
@@ -762,7 +774,8 @@
         if ((evt.length === 1) && evt[0].getSegmentId() && !_segmentsToProcess.includes(evt[0].getSegmentId()))
             _segmentsToProcess.push(evt[0].getSegmentId());
         removeHNs(evt);
-        checkMarkersEvents();
+        // 2023.07.19 : TEMPORARILY REMOVED. See note at checkMarkersEvent function. - dBsooner
+        // checkMarkersEvents();
     }
 
     function objectsAddedHNs(evt) {
@@ -770,7 +783,8 @@
             return;
         if ((evt.length === 1) && evt[0].getSegmentId() && !_segmentsToProcess.includes(evt[0].getSegmentId()))
             _segmentsToProcess.push(evt[0].getSegmentId());
-        checkMarkersEvents(true, 0);
+        // 2023.07.19 : TEMPORARILY REMOVED. See note at checkMarkersEvent function. - dBsooner
+        // checkMarkersEvents(true, 0);
     }
 
     function zoomEndEvent() {
@@ -794,7 +808,8 @@
                 drawHNs([evt.action.object]);
             else
                 removeHNs([evt.action.object]);
-            checkMarkersEvents();
+            // 2023.07.19 : TEMPORARILY REMOVED. See note at checkMarkersEvent function. - dBsooner
+            // checkMarkersEvents();
         }
         else if (evt.action?._description?.includes('Updated house number')) {
             const tempEvt = _.cloneDeep(evt);
@@ -808,7 +823,8 @@
             }
             removeHNs([tempEvt.action.object]);
             drawHNs([evt.action.object]);
-            checkMarkersEvents();
+            // 2023.07.19 : TEMPORARILY REMOVED. See note at checkMarkersEvent function. - dBsooner
+            // checkMarkersEvents();
         }
         else if (evt.action?._description?.includes('Added house number')) {
             if (evt.type === 'afterundoaction')
@@ -821,9 +837,11 @@
         }
         else if (evt.action?.houseNumber) {
             drawHNs((evt.action.newHouseNumber ? [evt.action.newHouseNumber] : [evt.action.houseNumber]));
-            checkMarkersEvents();
+            // 2023.07.19 : TEMPORARILY REMOVED. See note at checkMarkersEvent function. - dBsooner
+            // checkMarkersEvents();
         }
-        checkMarkersEvents();
+        // 2023.07.19 : TEMPORARILY REMOVED. See note at checkMarkersEvent function. - dBsooner
+        // checkMarkersEvents();
     }
 
     async function reloadClicked() {
@@ -840,11 +858,14 @@
                     if (mutation.type === 'attributes') {
                         if (mutation.oldValue?.includes('active') && (_holdFeatures.hn.length > 0) && (_wmeHnLayer.div.querySelectorAll('.active').length === 0))
                             flushHeldFeatures();
+                        /* 2023.07.19 : TEMPORARILY REMOVED. See note at checkMarkersEvent function. - dBsooner
+                         *
                         if (!mutation.oldValue?.indexOf('active') && mutation.target.classList.contains('active'))
                             checkMarkersEvents(true, 0, true, mutation.target);
                         const input = document.querySelector('div.olLayerDiv.house-numbers-layer div.house-number div.content.active:not(.new) input.number');
                         if (input?.value === '')
                             input.addEventListener('change', checkMarkersEvents);
+                        */
                     }
                 });
             });
