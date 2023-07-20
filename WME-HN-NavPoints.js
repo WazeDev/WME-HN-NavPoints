@@ -2,7 +2,7 @@
 // @name            WME HN NavPoints
 // @namespace       https://greasyfork.org/users/166843
 // @description     Shows navigation points of all house numbers in WME
-// @version         2023.06.15.01
+// @version         2023.07.20.01
 // @author          dBsooner
 // @grant           GM_xmlhttpRequest
 // @connect         greasyfork.org
@@ -36,7 +36,9 @@
         _BETA_DL_URL = 'YUhSMGNITTZMeTluY21WaGMzbG1iM0pyTG05eVp5OXpZM0pwY0hSekx6TTVNRFUzTXkxM2JXVXRhRzR0Ym1GMmNHOXBiblJ6TFdKbGRHRXZZMjlrWlM5WFRVVWxNakJJVGlVeU1FNWhkbEJ2YVc1MGN5VXlNQ2hpWlhSaEtTNTFjMlZ5TG1weg==',
         _ALERT_UPDATE = true,
         _SCRIPT_VERSION = GM_info.script.version.toString(),
-        _SCRIPT_VERSION_CHANGES = ['BUGFIX: Keyboard shortcuts not surviving reload.'],
+        _SCRIPT_VERSION_CHANGES = ['CHANGE: Latest WME update compatibility.',
+            'CHANGE: No longer removing HN or lines when first clicking a drag handle or HN input box.'
+        ],
         _DEBUG = /[βΩ]/.test(_SCRIPT_SHORT_NAME),
         _LOAD_BEGIN_TIME = performance.now(),
         _elems = {
@@ -61,25 +63,18 @@
         },
         _timeouts = {
             checkMarkersEvents: {},
-            flushHeldFeatures: {},
             hideTooltip: undefined,
             onWmeReady: undefined,
             saveSettingsToStorage: undefined,
             stripTooltipHTML: undefined
         },
-        _holdFeatures = {
-            hn: [],
-            lines: []
-        },
         dec = (s = '') => atob(atob(s));
 
     let _settings = {},
         _scriptActive = false,
-        _HNLayerObserver,
         _saveButtonObserver,
         _HNNavPointsLayer,
         _HNNavPointsNumbersLayer,
-        _wmeHnLayer,
         _processedSegments = [],
         _segmentsToProcess = [],
         _segmentsToRemove = [],
@@ -317,31 +312,17 @@
     }
 
     function observeHNLayer() {
-        if (W.editingMediator.attributes.editingHouseNumbers && !_HNLayerObserver.observing) {
-            [_wmeHnLayer] = W.map.getLayersByName('houseNumberMarkers');
-            _HNLayerObserver.observe(_wmeHnLayer.div, {
-                childList: false, subtree: true, attributes: true, attributeOldValue: true
-            });
-            _HNLayerObserver.observing = true;
+        if (W.editingMediator.attributes.editingHouseNumbers) {
+            _segmentsToProcess = W.selectionManager.getSegmentSelection().segments.map((segment) => segment.attributes.id);
+            _segmentsToRemove = [];
         }
-        else if (_HNLayerObserver.observing) {
-            _HNLayerObserver.disconnect();
-            _HNLayerObserver.observing = false;
-        }
-        if (!_HNLayerObserver.observing) {
+        else {
             W.model.segmentHouseNumbers.clear();
             processSegmentsToRemove(true, [..._segmentsToProcess]);
             processSegs('exithousenumbers', W.model.segments.getByIds([..._segmentsToProcess]), true);
             _segmentsToProcess = [];
             _segmentsToRemove = [];
             _timeouts.checkMarkersEvents = {};
-            _timeouts.flushHeldFeatures = {};
-            _wmeHnLayer = undefined;
-        }
-        else {
-            _segmentsToProcess = W.selectionManager.getSegmentSelection().segments.map((segment) => segment.attributes.id);
-            _segmentsToRemove = [];
-            checkMarkersEvents(true);
         }
         _saveButtonObserver.disconnect();
         _saveButtonObserver.observe(document.getElementById('save-button'), {
@@ -349,44 +330,19 @@
         });
     }
 
-    function flushHeldFeatures(toIndex = Math.random().toString(36).slice(2)) {
-        checkTimeout({ timeout: 'flushHeldFeatures', toIndex });
-        if (_holdFeatures.hn.length === 0)
-            return;
-        if (_HNNavPointsLayer.getFeaturesByAttribute('featureId', _holdFeatures.hn[0].attributes.featureId).length === 0) {
-            if (_settings.enableTooltip)
-                _HNNavPointsNumbersLayer.addMarker(_holdFeatures.hn);
-            else
-                _HNNavPointsNumbersLayer.addFeatures(_holdFeatures.hn);
-            _HNNavPointsLayer.addFeatures(_holdFeatures.lines);
-        }
-        _holdFeatures.hn = [];
-        _holdFeatures.lines = [];
-    }
-
-    function removeHNs(objArr, holdFeatures = false) {
+    function removeHNs(objArr) {
         let linesToRemove = [],
             hnsToRemove = [];
         const filterMarkers = function (marker) { return marker?.featureId === this.attributes.id; },
             processFilterMarkers = (marker) => {
-                if (holdFeatures)
-                    _holdFeatures.hn = marker;
                 hnsToRemove.push(marker);
             };
-        if (_holdFeatures.hn.length > 0)
-            flushHeldFeatures();
         objArr.forEach((hnObj) => {
             linesToRemove = linesToRemove.concat(_HNNavPointsLayer.getFeaturesByAttribute('featureId', hnObj.attributes.id));
-            if (holdFeatures)
-                _holdFeatures.lines = _HNNavPointsLayer.getFeaturesByAttribute('featureId', hnObj.attributes.id);
-            if (!_settings.enableTooltip) {
+            if (!_settings.enableTooltip)
                 hnsToRemove = hnsToRemove.concat(_HNNavPointsNumbersLayer.getFeaturesByAttribute('featureId', hnObj.attributes.id));
-                if (holdFeatures)
-                    _holdFeatures.hn = _HNNavPointsNumbersLayer.getFeaturesByAttribute('featureId', hnObj.attributes.id);
-            }
-            else {
+            else
                 _HNNavPointsNumbersLayer.markers.filter(filterMarkers.bind(hnObj)).forEach(processFilterMarkers);
-            }
         });
         if (linesToRemove.length > 0)
             _HNNavPointsLayer.removeFeatures(linesToRemove);
@@ -402,8 +358,6 @@
         if (houseNumberArr.length === 0)
             return;
         doSpinner('drawHNs', true);
-        _holdFeatures.hn = [];
-        _holdFeatures.lines = [];
         let svg,
             svgText,
             hnsToRemove = [],
@@ -623,94 +577,6 @@
         return false;
     }
 
-    function markerEvent(evt) {
-        if (!evt || preventProcess())
-            return;
-        if (evt.type === 'click:input') {
-            if (evt?.object && evt.object.dragging && !evt.object.dragging.last)
-                removeHNs([evt.object.model], true);
-        }
-        else if (evt.type === 'delete') {
-            removeHNs([evt.object.model]);
-        }
-        else if (evt.type === 'mousedown') {
-            if (evt.target.classList.contains('drag-handle') && this?.model)
-                removeHNs([this.model], true);
-            else if (evt.target.classList.contains('fraction-point'))
-                removeHNs([_wmeHnLayer.markers.filter((obj) => obj.dragging.active && obj.input)?.[0]?.model], true);
-        }
-        else if (evt.type === 'mouseup') {
-            if (evt.target.classList.contains('drag-handle') && (_holdFeatures.hn.length > 0)) {
-                const toIndex = Math.random().toString(36).slice(2);
-                _timeouts.flushHeldFeatures[toIndex] = window.setTimeout(flushHeldFeatures, 100, toIndex);
-            }
-            else if (evt.target.classList.contains('fraction-point') && (_holdFeatures.hn.length > 0)) {
-                const toIndex = Math.random().toString(36).slice(2);
-                _timeouts.flushHeldFeatures[toIndex] = window.setTimeout(flushHeldFeatures, 100, toIndex);
-            }
-        }
-        checkMarkersEvents();
-    }
-
-    // eslint-disable-next-line default-param-last
-    function checkMarkersEvents(retry = false, tries = 0, reclick, targetNode, toIndex = Math.random().toString(36).slice(2)) {
-        if (!W.editingMediator.attributes.editingHouseNumbers) {
-            if (retry && (tries < 50))
-                _timeouts.checkMarkersEvents[toIndex] = window.setTimeout(checkMarkersEvents, 100, true, ++tries, reclick, targetNode, toIndex);
-            else if (retry)
-                logError('Timeout (5 sec) exceeded waiting to enter editing house numbers mode.');
-            return;
-        }
-        const setMarkerEvent = function (marker, markerType, cbType, cbFunc, cbBind) {
-            hideTooltip();
-            if (markerType === 'input') {
-                marker.events.register(cbType, null, cbFunc);
-            }
-            else if (markerType === 'drag-handle') {
-                const dragHandle = marker.icon.div.children[0]?.querySelector('.drag-handle');
-                if (dragHandle && !dragHandle.dataset.hnnpHasListeners) {
-                    dragHandle.addEventListener('mousedown', cbFunc.bind(cbBind));
-                    dragHandle.addEventListener('mouseup', cbFunc.bind(cbBind));
-                    dragHandle.dataset.hnnpHasListeners = true;
-                }
-            }
-            else if (markerType === 'fraction-point') {
-                marker.icon.div.addEventListener('mousedown', cbFunc.bind(cbBind));
-                marker.icon.div.addEventListener('mouseup', cbFunc.bind(cbBind));
-                marker.icon.div.dataset.hnnpHasListeners = true;
-            }
-        };
-        checkTimeout({ timeout: 'checkMarkersEvents', toIndex });
-        if (_wmeHnLayer?.markers?.length > 0) {
-            const checkFunc = (cbFunc) => cbFunc.func === markerEvent;
-            _wmeHnLayer.markers.forEach((obj) => {
-                if (obj.input) {
-                    if (!obj.events.listeners['click:input']?.some(checkFunc))
-                        setMarkerEvent(obj, 'input', 'click:input', markerEvent);
-                    if (!obj.events.listeners.delete?.some(checkFunc))
-                        setMarkerEvent(obj, 'input', 'delete', markerEvent);
-                    if (!obj.icon.div.querySelector('.drag-handle')?.dataset.hnnpHasListeners)
-                        setMarkerEvent(obj, 'drag-handle', null, markerEvent, obj);
-                }
-                else if (obj.icon.div.classList.contains('fraction-point')) {
-                    if (!obj.icon.div.dataset.hnnpHasListeners)
-                        setMarkerEvent(obj, 'fraction-point', null, markerEvent, obj);
-                }
-            });
-            if (reclick) {
-                const tmpNode = targetNode?.querySelector('input.number');
-                tmpNode?.focus();
-                tmpNode?.setSelectionRange(tmpNode.selectionStart, tmpNode.selectionStart);
-            }
-        }
-        else if (retry && (tries < 50)) {
-            _timeouts.checkMarkersEvents[toIndex] = window.setTimeout(checkMarkersEvents, 100, true, ++tries, reclick, targetNode, toIndex);
-        }
-        else if (retry) {
-            logError('Timeout (5 sec) exceeded waiting for markers to popuplate within checkMarkersEvents');
-        }
-    }
-
     function segmentsEvent(evt) {
         if (!evt || preventProcess())
             return;
@@ -753,7 +619,6 @@
             return;
         if ((evt.length === 1) && evt[0].getSegmentId() && !_segmentsToProcess.includes(evt[0].getSegmentId()))
             _segmentsToProcess.push(evt[0].getSegmentId());
-        checkMarkersEvents();
     }
 
     function objectsStateDeletedHNs(evt) {
@@ -762,7 +627,6 @@
         if ((evt.length === 1) && evt[0].getSegmentId() && !_segmentsToProcess.includes(evt[0].getSegmentId()))
             _segmentsToProcess.push(evt[0].getSegmentId());
         removeHNs(evt);
-        checkMarkersEvents();
     }
 
     function objectsAddedHNs(evt) {
@@ -770,7 +634,6 @@
             return;
         if ((evt.length === 1) && evt[0].getSegmentId() && !_segmentsToProcess.includes(evt[0].getSegmentId()))
             _segmentsToProcess.push(evt[0].getSegmentId());
-        checkMarkersEvents(true, 0);
     }
 
     function zoomEndEvent() {
@@ -794,7 +657,6 @@
                 drawHNs([evt.action.object]);
             else
                 removeHNs([evt.action.object]);
-            checkMarkersEvents();
         }
         else if (evt.action?._description?.includes('Updated house number')) {
             const tempEvt = _.cloneDeep(evt);
@@ -808,7 +670,6 @@
             }
             removeHNs([tempEvt.action.object]);
             drawHNs([evt.action.object]);
-            checkMarkersEvents();
         }
         else if (evt.action?._description?.includes('Added house number')) {
             if (evt.type === 'afterundoaction')
@@ -821,9 +682,7 @@
         }
         else if (evt.action?.houseNumber) {
             drawHNs((evt.action.newHouseNumber ? [evt.action.newHouseNumber] : [evt.action.houseNumber]));
-            checkMarkersEvents();
         }
-        checkMarkersEvents();
     }
 
     async function reloadClicked() {
@@ -835,19 +694,6 @@
 
     function initBackgroundTasks(status) {
         if (status === 'enable') {
-            _HNLayerObserver = new MutationObserver((mutationsList) => {
-                mutationsList.forEach((mutation) => {
-                    if (mutation.type === 'attributes') {
-                        if (mutation.oldValue?.includes('active') && (_holdFeatures.hn.length > 0) && (_wmeHnLayer.div.querySelectorAll('.active').length === 0))
-                            flushHeldFeatures();
-                        if (!mutation.oldValue?.indexOf('active') && mutation.target.classList.contains('active'))
-                            checkMarkersEvents(true, 0, true, mutation.target);
-                        const input = document.querySelector('div.olLayerDiv.house-numbers-layer div.house-number div.content.active:not(.new) input.number');
-                        if (input?.value === '')
-                            input.addEventListener('change', checkMarkersEvents);
-                    }
-                });
-            });
             _saveButtonObserver = new MutationObserver((mutationsList) => {
                 if ((W.model.actionManager._redoStack.length === 0)
                     && mutationsList.some((mutation) => ((mutation.attributeName === 'disabled')
@@ -887,7 +733,6 @@
             _scriptActive = true;
         }
         else if (status === 'disable') {
-            _HNLayerObserver = undefined;
             _saveButtonObserver = undefined;
             W.accelerators.events.on('reloadData', null, destroyAllHNs);
             document.querySelector('wz-button.overlay-button.reload-button').removeEventListener('click', reloadClicked);
