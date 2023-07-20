@@ -37,7 +37,7 @@
         _ALERT_UPDATE = true,
         _SCRIPT_VERSION = GM_info.script.version.toString(),
         _SCRIPT_VERSION_CHANGES = ['CHANGE: Latest WME update compatibility.',
-            'CHANGE: No longer removing HN or lines when first clicking an HN.'
+            'CHANGE: No longer removing HN or lines when first clicking a drag handle or HN input box.'
         ],
         _DEBUG = /[βΩ]/.test(_SCRIPT_SHORT_NAME),
         _LOAD_BEGIN_TIME = performance.now(),
