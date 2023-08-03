@@ -2,7 +2,7 @@
 // @name            WME HN NavPoints
 // @namespace       https://greasyfork.org/users/166843
 // @description     Shows navigation points of all house numbers in WME
-// @version         2023.07.20.01
+// @version         2023.08.02.01
 // @author          dBsooner
 // @grant           GM_xmlhttpRequest
 // @connect         greasyfork.org
@@ -36,9 +36,7 @@
         _BETA_DL_URL = 'YUhSMGNITTZMeTluY21WaGMzbG1iM0pyTG05eVp5OXpZM0pwY0hSekx6TTVNRFUzTXkxM2JXVXRhRzR0Ym1GMmNHOXBiblJ6TFdKbGRHRXZZMjlrWlM5WFRVVWxNakJJVGlVeU1FNWhkbEJ2YVc1MGN5VXlNQ2hpWlhSaEtTNTFjMlZ5TG1weg==',
         _ALERT_UPDATE = true,
         _SCRIPT_VERSION = GM_info.script.version.toString(),
-        _SCRIPT_VERSION_CHANGES = ['CHANGE: Latest WME update compatibility.',
-            'CHANGE: No longer removing HN or lines when first clicking a drag handle or HN input box.'
-        ],
+        _SCRIPT_VERSION_CHANGES = ['CHANGE: WME release v2.180-7-geb388e8d3 compatibility.'],
         _DEBUG = /[βΩ]/.test(_SCRIPT_SHORT_NAME),
         _LOAD_BEGIN_TIME = performance.now(),
         _elems = {
@@ -263,7 +261,7 @@
                 processFilterMarkers = (marker) => hnsToRemove.push(marker);
             for (let i = segmentsToProcess.length - 1; i > -1; i--) {
                 const segId = segmentsToProcess[i];
-                if (!W.model.segments.objects[segId] || force) {
+                if (!W.model.segments.getObjectById(segId) || force) {
                     segmentsToProcess.splice(i, 1);
                     linesToRemove = linesToRemove.concat(_HNNavPointsLayer.getFeaturesByAttribute('segmentId', segId));
                     if (!_settings.enableTooltip)
@@ -290,7 +288,7 @@
         if (checked) {
             if (!_scriptActive)
                 await initBackgroundTasks('enable');
-            processSegs('hnLayerToggled', W.model.segments.getByAttributes({ hasHNs: true }));
+            processSegs('hnLayerToggled', W.model.segments.getObjectArray().filter((o) => o.getAttribute('hasHNs')));
         }
         else if (!_settings.hnNumbers && _scriptActive) {
             initBackgroundTasks('disable');
@@ -304,7 +302,7 @@
         if (checked) {
             if (!_scriptActive)
                 await initBackgroundTasks('enable');
-            processSegs('hnNumbersLayerToggled', W.model.segments.getByAttributes({ hasHNs: true }));
+            processSegs('hnNumbersLayerToggled', W.model.segments.getObjectArray().filter((o) => o.getAttribute('hasHNs')));
         }
         else if (!_settings.hnLines && _scriptActive) {
             initBackgroundTasks('disable');
@@ -312,8 +310,8 @@
     }
 
     function observeHNLayer() {
-        if (W.editingMediator.attributes.editingHouseNumbers) {
-            _segmentsToProcess = W.selectionManager.getSegmentSelection().segments.map((segment) => segment.attributes.id);
+        if (W.editingMediator.get('editingHouseNumbers')) {
+            _segmentsToProcess = W.selectionManager.getSegmentSelection().segments.map((o) => o.getID());
             _segmentsToRemove = [];
         }
         else {
@@ -338,9 +336,9 @@
                 hnsToRemove.push(marker);
             };
         objArr.forEach((hnObj) => {
-            linesToRemove = linesToRemove.concat(_HNNavPointsLayer.getFeaturesByAttribute('featureId', hnObj.attributes.id));
+            linesToRemove = linesToRemove.concat(_HNNavPointsLayer.getFeaturesByAttribute('featureId', hnObj.getID()));
             if (!_settings.enableTooltip)
-                hnsToRemove = hnsToRemove.concat(_HNNavPointsNumbersLayer.getFeaturesByAttribute('featureId', hnObj.attributes.id));
+                hnsToRemove = hnsToRemove.concat(_HNNavPointsNumbersLayer.getFeaturesByAttribute('featureId', hnObj.getID()));
             else
                 _HNNavPointsNumbersLayer.markers.filter(filterMarkers.bind(hnObj)).forEach(processFilterMarkers);
         });
@@ -372,9 +370,8 @@
         }
         for (let i = 0, { length } = houseNumberArr; i < length; i++) {
             const hnObj = houseNumberArr[i],
-                segmentId = hnObj.getSegmentId(),
-                seg = W.model.segments.objects[segmentId];
-            if (seg) {
+                segmentId = hnObj.getSegmentId();
+            if (W.model.segments.getObjectById(segmentId)) {
                 const featureId = hnObj.getID(),
                     markerIdx = _settings.enableTooltip ? _HNNavPointsNumbersLayer.markers.map(mapFeatureId).indexOf(featureId) : undefined,
                     // eslint-disable-next-line no-nested-ternary
@@ -470,11 +467,11 @@
      * way to track which segments have been updated most recently to prevent a total refresh of HNs after an event.
      * Changed to using a global to keep track of segmentIds touched during HN edit mode.
      */
-        if ((action === 'settingChanged') && (W.map.getZoom() < _settings.disableBelowZoom)) {
+        if ((action === 'settingChanged') && (W.map.getOLMap().getZoom() < _settings.disableBelowZoom)) {
             destroyAllHNs();
             return;
         }
-        if (!arrSegObjs || (arrSegObjs.length === 0) || (W.map.getZoom() < _settings.disableBelowZoom) || preventProcess())
+        if (!arrSegObjs || (arrSegObjs.length === 0) || (W.map.getOLMap().getZoom() < _settings.disableBelowZoom) || preventProcess())
             return;
         doSpinner('processSegs', true);
         const eg = W.map.getExtent().toGeometry(),
@@ -499,7 +496,7 @@
                     hnNavPointsNumbersToRemove = [];
                 arrSegObjs.forEach((segObj) => {
                     const segmentId = segObj.getID();
-                    if (!eg.intersects(segObj.geometry) && (segmentId > 0)) {
+                    if (!eg.intersects(segObj.getAttribute('geometry')) && (segmentId > 0)) {
                         hnNavPointsToRemove = hnNavPointsToRemove.concat(_HNNavPointsLayer.getFeaturesByAttribute('segmentId', segmentId));
                         if (!_settings.enableTooltip)
                             hnNavPointsNumbersToRemove = hnNavPointsNumbersToRemove.concat(_HNNavPointsNumbersLayer.getFeaturesByAttribute('segmentId', segmentId));
@@ -570,7 +567,7 @@
             destroyAllHNs();
             return true;
         }
-        if (W.map.getZoom() < _settings.disableBelowZoom) {
+        if (W.map.getOLMap().getZoom() < _settings.disableBelowZoom) {
             destroyAllHNs();
             return true;
         }
@@ -598,7 +595,7 @@
             });
         }
         else {
-            processSegs(this.action, evt.filter((seg) => seg.attributes.hasHNs));
+            processSegs(this.action, evt.filter((o) => o.getAttribute('hasHNs')));
         }
     }
 
@@ -639,10 +636,10 @@
     function zoomEndEvent() {
         if (preventProcess())
             return;
-        if ((W.map.getZoom() < _settings.disableBelowZoom))
+        if ((W.map.getOLMap().getZoom() < _settings.disableBelowZoom))
             destroyAllHNs();
-        if ((W.map.getZoom() > (_settings.disableBelowZoom - 1)) && (_processedSegments.length === 0))
-            processSegs('zoomend', W.model.segments.getByAttributes({ hasHNs: true }), true);
+        if ((W.map.getOLMap().getZoom() > (_settings.disableBelowZoom - 1)) && (_processedSegments.length === 0))
+            processSegs('zoomend', W.model.segments.getObjectArray().filter((o) => o.getAttribute('hasHNs')), true);
     }
 
     function afterActionsEvent(evt) {
@@ -689,7 +686,7 @@
         if (preventProcess() || document.querySelector('wz-button.overlay-button.reload-button').classList.contains('disabled'))
             return;
         await destroyAllHNs();
-        processSegs('reload', W.model.segments.getByAttributes({ hasHNs: true }));
+        processSegs('reload', W.model.segments.getObjectArray().filter((o) => o.getAttribute('hasHNs')));
     }
 
     function initBackgroundTasks(status) {
@@ -700,7 +697,7 @@
                             && (mutation.oldValue === 'true')
                             && (mutation.target.disabled === true)))
                 ) {
-                    if (W.editingMediator.attributes.editingHouseNumbers)
+                    if (W.editingMediator.get('editingHouseNumbers'))
                         processSegs('afterSave', W.model.segments.getByIds([..._segmentsToProcess]), true);
                     else
                         processSegmentsToRemove();
@@ -762,14 +759,14 @@
     function enterHNEditMode(segment, moveMap) {
         if (segment) {
             if (moveMap)
-                W.map.setCenter({ lon: segment.getCenter().x, lat: segment.getCenter().y }, W.map.getZoom());
+                W.map.setCenter({ lon: segment.getCenter().x, lat: segment.getCenter().y }, W.map.getOLMap().getZoom());
             W.selectionManager.setSelectedModels(segment);
             document.querySelector('#segment-edit-general .edit-house-numbers').dispatchEvent(new MouseEvent('click', { bubbles: true }));
         }
     }
 
     function showTooltip(evt) {
-        if ((W.map.getZoom() < 16) || W.editingMediator.attributes.editingHouseNumbers || !_settings.enableTooltip)
+        if ((W.map.getOLMap().getZoom() < 16) || W.editingMediator.get('editingHouseNumbers') || !_settings.enableTooltip)
             return;
         if (evt?.object?.featureId) {
             checkTooltip();
@@ -778,7 +775,7 @@
             if (_popup.inUse && (_popup.hnNumber === hnNumber) && (_popup.segmentId === segmentId))
                 return;
             const segment = W.model.segments.getObjectById(segmentId),
-                street = W.model.streets.getObjectById(segment.attributes.primaryStreetID),
+                street = W.model.streets.getObjectById(segment.getPrimaryStreetID()),
                 popupPixel = W.map.getPixelFromLonLat(evt.object.lonlat),
                 divElemRoot = createElem('div', {
                     id: 'hnNavPointsTooltipDiv-tooltip',
@@ -793,7 +790,7 @@
                 }),
                 invokeEnterHNEditMode = () => enterHNEditMode(segment, moveMap),
                 divElemRootDivDiv = createElem('div', { class: 'house-number-marker-tooltip' });
-            divElemRootDivDiv.appendChild(createElem('div', { class: 'title', dir: 'auto', textContent: `${hnNumber} ${(street ? street.name : '')}` }));
+            divElemRootDivDiv.appendChild(createElem('div', { class: 'title', dir: 'auto', textContent: `${hnNumber} ${(street ? street.getName() : '')}` }));
             divElemRootDivDiv.appendChild(createElem('div', {
                 id: 'hnNavPointsTooltipDiv-edit', class: 'edit-button fa fa-pencil', style: segment.canEditHouseNumbers() ? '' : 'display:none;'
             }, [{ click: invokeEnterHNEditMode }]));
@@ -942,8 +939,8 @@
                 if (settingName === 'keepHNLayerOnTop')
                     checkLayerIndex();
                 saveSettingsToStorage();
-                if ((settingName === 'enableTooltip') && (W.map.getZoom() > (_settings.disableBelowZoom - 1)) && (_settings.hnLines || _settings.hnNumbers))
-                    processSegs('settingChanged', W.model.segments.getByAttributes({ hasHNs: true }), true, 0);
+                if ((settingName === 'enableTooltip') && (W.map.getOLMap().getZoom() > (_settings.disableBelowZoom - 1)) && (_settings.hnLines || _settings.hnNumbers))
+                    processSegs('settingChanged', W.model.segments.getObjectArray().filter((o) => o.getAttribute('hasHNs')), true, 0);
             },
             handleTextboxChange = function () {
                 const newVal = Math.min(22, Math.max(16, +this.value));
@@ -952,10 +949,10 @@
                         this.value = newVal;
                     _settings.disableBelowZoom = newVal;
                     saveSettingsToStorage();
-                    if ((W.map.getZoom() < newVal) && (_settings.hnLines || _settings.hnNumbers))
+                    if ((W.map.getOLMap().getZoom() < newVal) && (_settings.hnLines || _settings.hnNumbers))
                         processSegs('settingChanged', null, true, 0);
                     else if (_settings.hnLines || _settings.hnNumbers)
-                        processSegs('settingChanged', W.model.segments.getByAttributes({ hasHNs: true }), true, 0);
+                        processSegs('settingChanged', W.model.segments.getObjectArray().filter((o) => o.getAttribute('hasHNs')), true, 0);
                 }
             },
             buildCheckbox = (id = '', textContent = '', checked = true, title = '', disabled = false) => createElem('wz-checkbox', {
@@ -1060,7 +1057,7 @@
         log(`Fully initialized in ${Math.round(performance.now() - _LOAD_BEGIN_TIME)} ms.`);
         showScriptInfoAlert();
         if (_scriptActive)
-            processSegs('init', W.model.segments.getByAttributes({ hasHNs: true }));
+            processSegs('init', W.model.segments.getObjectArray().filter((o) => o.getAttribute('hasHNs')));
         setTimeout(saveSettingsToStorage, 10000);
     }
 
