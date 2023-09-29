@@ -2,7 +2,7 @@
 // @name            WME HN NavPoints
 // @namespace       https://greasyfork.org/users/166843
 // @description     Shows navigation points of all house numbers in WME
-// @version         2023.08.02.01
+// @version         2023.09.29.01
 // @author          dBsooner
 // @grant           GM_xmlhttpRequest
 // @connect         greasyfork.org
@@ -36,7 +36,7 @@
         _BETA_DL_URL = 'YUhSMGNITTZMeTluY21WaGMzbG1iM0pyTG05eVp5OXpZM0pwY0hSekx6TTVNRFUzTXkxM2JXVXRhRzR0Ym1GMmNHOXBiblJ6TFdKbGRHRXZZMjlrWlM5WFRVVWxNakJJVGlVeU1FNWhkbEJ2YVc1MGN5VXlNQ2hpWlhSaEtTNTFjMlZ5TG1weg==',
         _ALERT_UPDATE = true,
         _SCRIPT_VERSION = GM_info.script.version.toString(),
-        _SCRIPT_VERSION_CHANGES = ['CHANGE: WME release v2.180-7-geb388e8d3 compatibility.'],
+        _SCRIPT_VERSION_CHANGES = ['CHANGE: WME beta release v2.188 compatibility.'],
         _DEBUG = /[βΩ]/.test(_SCRIPT_SHORT_NAME),
         _LOAD_BEGIN_TIME = performance.now(),
         _elems = {
@@ -385,8 +385,16 @@
                     else
                         hnsToRemove.push(hnToRemove);
                 }
-                const p1 = new OpenLayers.Geometry.Point(hnObj.getFractionPoint().x, hnObj.getFractionPoint().y),
-                    p2 = new OpenLayers.Geometry.Point(hnObj.getGeometry().x, hnObj.getGeometry().y),
+                //Fix this mess once WME beta v2.188 is released to production.
+                const betaFractionPoint = (hnObj.getFractionPoint().coordinates)
+                        ? WazeWrap.Geometry.ConvertTo900913(hnObj.getFractionPoint().coordinates[0], hnObj.getFractionPoint().coordinates[1])
+                        : undefined,
+                    fractionX = betaFractionPoint ? betaFractionPoint.lon : hnObj.getFractionPoint().x,
+                    fractionY = betaFractionPoint ? betaFractionPoint.lat : hnObj.getFractionPoint().y,
+                    geometryX = hnObj.getOLGeometry ? hnObj.getOLGeometry().x : hnObj.getGeometry().x,
+                    geometryY = hnObj.getOLGeometry ? hnObj.getOLGeometry().y : hnObj.getGeometry().y,
+                    p1 = new OpenLayers.Geometry.Point(fractionX, fractionY),
+                    p2 = new OpenLayers.Geometry.Point(geometryX, geometryY),
                     // eslint-disable-next-line no-nested-ternary
                     strokeColor = (hnObj.isForced()
                         ? (!hnObj.getUpdatedBy()) ? 'red' : 'orange'
