@@ -2,7 +2,7 @@
 // @name            WME HN NavPoints
 // @namespace       https://greasyfork.org/users/166843
 // @description     Shows navigation points of all house numbers in WME
-// @version         2026.04.19.05
+// @version         2026.04.19.06
 // @author          dBsooner
 // @grant           GM_info
 // @grant           GM_xmlhttpRequest
