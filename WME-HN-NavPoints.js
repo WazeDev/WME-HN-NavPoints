@@ -2,7 +2,7 @@
 // @name            WME HN NavPoints
 // @namespace       https://greasyfork.org/users/166843
 // @description     Shows navigation points of all house numbers in WME
-// @version         2026.04.19.06
+// @version         2026.04.19.09
 // @author          dBsooner
 // @grant           GM_info
 // @grant           GM_xmlhttpRequest
@@ -23,10 +23,10 @@
  * Original concept and code for WME HN NavPoints was written by MajkiiTelini. After version 0.6.6, this
  * script is maintained by the WazeDev team. Special thanks is definitely given to MajkiiTelini for his
  * hard work and dedication to the original script.
- *
-
-W.model.actionManager._redoStack.length === 0  // Example of checking for an empty undo stack to infer that a save just occurred, which can be used to trigger a refresh of HNs after edits. Not currently implemented in the script but may be useful in the future if a reliable "afterSave" event cannot be found in the SDK.
-
+ */
+/*
+ * Detect save state via SDK event 'wme-after-redo-clear' which fires when the redo stack is cleared
+ * after a save, triggering a refresh of HNs.
  */
 
 
@@ -47,7 +47,7 @@ W.model.actionManager._redoStack.length === 0  // Example of checking for an emp
         _BETA_DL_URL = 'YUhSMGNITTZMeTluY21WaGMzbG1iM0pyTG05eVp5OXpZM0pwY0hSekx6TTVNRFUzTXkxM2JXVXRhRzR0Ym1GMmNHOXBiblJ6TFdKbGRHRXZZMjlrWlM5WFRVVWxNakJJVGlVeU1FNWhkbEJ2YVc1MGN5VXlNQ2hpWlhSaEtTNTFjMlZ5TG1weg==',
         _ALERT_UPDATE = true,
         _SCRIPT_VERSION = GM_info.script.version.toString(),
-        _SCRIPT_VERSION_CHANGES = ['CHANGE: WME beta release v2.242 compatibility.'],
+        _SCRIPT_VERSION_CHANGES = ['FIX: House number lines/labels now removed immediately on delete without requiring a page refresh.', 'FIX: Undoing a house number deletion now correctly restores the line and label on the map.'],
         _DEBUG = /[βΩ]/.test(_SCRIPT_SHORT_NAME),
         _LOAD_BEGIN_TIME = performance.now(),
         _elems = {
@@ -95,6 +95,7 @@ W.model.actionManager._redoStack.length === 0  // Example of checking for an emp
         _saveButtonObserver,
         _processedSegments = [],
         _segmentsToProcess = [],
+        _recentlyDeletedSegmentIds = new Set(), // segments that had HNs deleted (pending undo check)
         _segmentsToRemove = [],
         _hnNavPointsTooltipDiv,
         _popup = {
@@ -103,14 +104,35 @@ W.model.actionManager._redoStack.length === 0  // Example of checking for an emp
             segmentId: -1
         };
 
+    /**
+     * Logs a message to the browser console with the script name prefix
+     * @param {string} message - The message to log
+     * @param {*} [data=''] - Optional data to include with the message
+     */
     function log(message, data = '') { console.log(`${_SCRIPT_SHORT_NAME}:`, message, data); }
+
+    /**
+     * Logs an error message to the browser console
+     * @param {string} message - The error message to log
+     * @param {*} [data=''] - Optional error data or stack trace
+     */
     function logError(message, data = '') { console.error(`${_SCRIPT_SHORT_NAME}:`, new Error(message), data); }
-    // function logWarning(message, data = '') { console.warn(`${_SCRIPT_SHORT_NAME}:`, message, data); }
+
+
+    /**
+     * Logs a debug message (only in debug/beta/alpha versions)
+     * @param {string} message - The debug message
+     * @param {*} [data=''] - Optional debug data
+     */
     function logDebug(message, data = '') {
         if (_DEBUG)
             log(message, data);
     }
 
+    /**
+     * Gets the current map zoom level using WME SDK or fallback
+     * @returns {number} Current zoom level (0-28), or 0 if unavailable
+     */
     function getMapZoom() {
         if (wmeSDK && wmeSDK.Map) {
             try {
@@ -124,6 +146,14 @@ W.model.actionManager._redoStack.length === 0  // Example of checking for an emp
         return 0;
     }
 
+    /**
+     * Deep or shallow merges objects together
+     * @param {boolean} [deep=false] - If true, performs deep merge of nested objects
+     * @param {...Object} args - Objects to merge
+     * @returns {Object} Merged object
+     * @example
+     * const merged = $extend(true, {a: 1}, {b: {c: 2}});
+     */
     function $extend(...args) {
         const extended = {},
             deep = Object.prototype.toString.call(args[0]) === '[object Boolean]' ? args[0] : false,
@@ -144,6 +174,18 @@ W.model.actionManager._redoStack.length === 0  // Example of checking for an emp
         return extended;
     }
 
+    /**
+     * Creates a DOM element with attributes and event listeners
+     * @param {string} [type=''] - Element type from _elems cache or 'div' as default
+     * @param {Object} [attrs={}] - Element attributes and properties
+     * @param {Array<Object>} [eventListener=[]] - Array of event listener objects {eventName: callback}
+     * @returns {HTMLElement} Created element with applied attributes and listeners
+     * @example
+     * const btn = createElem('button', 
+     *   {textContent: 'Click me', class: 'my-btn'},
+     *   [{click: () => alert('clicked')}]
+     * );
+     */
     function createElem(type = '', attrs = {}, eventListener = []) {
         const el = _elems[type]?.cloneNode(false) || _elems.div.cloneNode(false),
             applyEventListeners = function ([evt, cb]) {
@@ -165,6 +207,13 @@ W.model.actionManager._redoStack.length === 0  // Example of checking for an emp
         return el;
     }
 
+    /**
+     * Loads user settings from browser localStorage and applies defaults
+     * @async
+     * @returns {Promise<void>}
+     * @description Merges stored settings with defaults, handles legacy migrations,
+     * and schedules periodic settings save
+     */
     async function loadSettingsFromStorage() {
         const defaultSettings = {
                 disableBelowZoom: 17,
@@ -195,6 +244,10 @@ W.model.actionManager._redoStack.length === 0  // Example of checking for an emp
         return Promise.resolve();
     }
 
+    /**
+     * Saves current settings to browser localStorage
+     * @description Throttled save with 5-second delay to avoid excessive writes
+     */
     function saveSettingsToStorage() {
         checkTimeout({ timeout: 'saveSettingsToStorage' });
         if (localStorage) {
@@ -215,6 +268,12 @@ W.model.actionManager._redoStack.length === 0  // Example of checking for an emp
         }
     }
 
+    /**
+     * Registers a keyboard shortcut for a feature
+     * @param {string} shortcutId - Unique identifier for the shortcut
+     * @param {string} description - Human-readable description shown in WME
+     * @param {Function} callback - Function to execute when shortcut is triggered
+     */
     function _registerShortcut(shortcutId, description, callback) {
         const savedCombo = _settings.shortcuts?.[shortcutId]?.combo ?? null;
         let shortcutKeys = savedCombo;
@@ -235,6 +294,10 @@ W.model.actionManager._redoStack.length === 0  // Example of checking for an emp
             logDebug(`Failed to register shortcut "${description}": ${err.message ?? err}`);
         }
     }
+    /**
+     * Displays script information alert with version and changelog
+     * @description Shows version history and links to Waze forum discussion
+     */
     function showScriptInfoAlert() {
         if (_ALERT_UPDATE && (_SCRIPT_VERSION !== _settings.lastVersion)) {
             const divElemRoot = createElem('div');
@@ -259,6 +322,10 @@ W.model.actionManager._redoStack.length === 0  // Example of checking for an emp
         }
     }
 
+    /**
+     * Safely clears a timeout and removes it from tracking
+     * @param {Object} obj - Object with 'timeout' property containing timeout name
+     */
     function checkTimeout(obj) {
         if (obj.toIndex) {
             if (_timeouts[obj.timeout]?.[obj.toIndex]) {
@@ -273,6 +340,12 @@ W.model.actionManager._redoStack.length === 0  // Example of checking for an emp
         }
     }
 
+    /**
+     * Controls rendering spinners to prevent concurrent operations
+     * @param {string} [spinnerName=''] - Name of the spinner to control
+     * @param {boolean} [spin=true] - If true, activates spinner; if false, deactivates
+     * @description Prevents race conditions during rendering and processing
+     */
     function doSpinner(spinnerName = '', spin = true) {
         const btn = document.getElementById('hnNPSpinner');
         if (!spin) {
@@ -311,6 +384,12 @@ W.model.actionManager._redoStack.length === 0  // Example of checking for an emp
     }
 
     // eslint-disable-next-line default-param-last
+    /**
+     * Removes house numbers that are marked for deletion
+     * @param {boolean} [force=false] - If true, immediately process; otherwise batch process
+     * @param {Array} [segmentsArr] - Optional array of segments to specifically remove
+     * @description Processes the removal queue and updates feature maps
+     */
     function processSegmentsToRemove(force = false, segmentsArr) {
         const segmentsToProcess = segmentsArr || _segmentsToRemove;
         let needsRedraw = false;
@@ -337,6 +416,11 @@ W.model.actionManager._redoStack.length === 0  // Example of checking for an emp
         }
     }
 
+    /**
+     * Handles toggling of the HN NavPoints lines layer visibility
+     * @async
+     * @param {boolean} checked - True to show layer, false to hide
+     */
     async function hnLayerToggled(checked) {
         if (wmeSDK)
             wmeSDK.Map.setLayerVisibility({ layerName: _HN_LINES_LAYER, visibility: checked });
@@ -353,6 +437,11 @@ W.model.actionManager._redoStack.length === 0  // Example of checking for an emp
         }
     }
 
+    /**
+     * Handles toggling of the HN NavPoints numbers (labels) layer visibility
+     * @async
+     * @param {boolean} checked - True to show labels, false to hide
+     */
     async function hnNumbersLayerToggled(checked) {
         if (wmeSDK)
             wmeSDK.Map.setLayerVisibility({ layerName: _HN_NUMBERS_LAYER, visibility: checked });
@@ -371,6 +460,11 @@ W.model.actionManager._redoStack.length === 0  // Example of checking for an emp
 
 
 
+    /**
+     * Removes house number features from the map
+     * @param {Array} objArr - Array of house number objects to remove
+     * @description Iterates through house numbers and removes their visual representations
+     */
     function removeHNs(objArr) {
         let hasChanges = false;
         const getHNSegmentId = (hn) => (typeof hn.getSegmentId === 'function') ? hn.getSegmentId() : hn.segmentId,
@@ -395,6 +489,12 @@ W.model.actionManager._redoStack.length === 0  // Example of checking for an emp
             _redrawHNLayers();
     }
 
+    /**
+     * Converts Web Mercator coordinates to WGS84 latitude/longitude
+     * @param {number} x - Web Mercator X coordinate
+     * @param {number} y - Web Mercator Y coordinate
+     * @returns {{lat: number, lon: number}} Object with latitude and longitude
+     */
     function mercatorToWGS84(x, y) {
         return {
             lon: x / 20037508.34 * 180,
@@ -402,6 +502,12 @@ W.model.actionManager._redoStack.length === 0  // Example of checking for an emp
         };
     }
 
+    /**
+     * Draws house numbers on the map layers
+     * @param {Array} houseNumberArr - Array of house number objects from WME model
+     * @description Creates line features and label features for each house number.
+     * Colors are based on house number type and state
+     */
     function drawHNs(houseNumberArr) {
         if (houseNumberArr.length === 0)
             return;
@@ -501,6 +607,10 @@ W.model.actionManager._redoStack.length === 0  // Example of checking for an emp
         doSpinner('drawHNs', false);
     }
 
+    /**
+     * Removes all house number features from the map
+     * @description Clears all internal feature maps and removes layers from map
+     */
     function destroyAllHNs() {
         doSpinner('destroyAllHNs', true);
         if (wmeSDK) {
@@ -516,10 +626,18 @@ W.model.actionManager._redoStack.length === 0  // Example of checking for an emp
         Promise.resolve();
     }
 
+    /**
+     * Gets the current visible map extent as a bounding box
+     * @returns {{north: number, south: number, east: number, west: number}|null} Bbox object or null
+     */
     function getMapExtentBbox() {
         return wmeSDK ? wmeSDK.Map.getMapExtent() : [0, 0, 0, 0];
     }
 
+    /**
+     * Redraws house number layers based on current visibility and zoom level
+     * @description Checks zoom level and layer visibility settings before rendering
+     */
     function _redrawHNLayers() {
         if (!wmeSDK) return;
         wmeSDK.Map.removeAllFeaturesFromLayer({ layerName: _HN_LINES_LAYER });
@@ -532,6 +650,15 @@ W.model.actionManager._redoStack.length === 0  // Example of checking for an emp
             wmeSDK.Map.addFeaturesToLayer({ layerName: _HN_NUMBERS_LAYER, features: allNums });
     }
 
+    /**
+     * Processes segments to add or update house numbers
+     * @param {string} action - Action type: 'add', 'update', or 'remove'
+     * @param {Array} arrSegObjs - Array of segment objects to process
+     * @param {boolean} [processAll=false] - If true, process all segments regardless of state
+     * @param {number} [retry=0] - Retry counter for failed attempts
+     * @description Extracts house numbers from segments and queues rendering.
+     * Handles both SDK segment objects and legacy W.model segments
+     */
     function processSegs(action, arrSegObjs, processAll = false, retry = 0) {
     /* As of 2020.06.08 (sometime before this date) updatedOn does not get updated when updating house numbers. Looking for a new
      * way to track which segments have been updated most recently to prevent a total refresh of HNs after an event.
@@ -661,6 +788,10 @@ W.model.actionManager._redoStack.length === 0  // Example of checking for an emp
         doSpinner('processSegs', false);
     }
 
+    /**
+     * Checks if processing should be prevented (e.g., script not active, zoom too low)
+     * @returns {boolean} True if processing should be prevented
+     */
     function preventProcess() {
         if (!_settings.hnLines && !_settings.hnNumbers) {
             if (_scriptActive)
@@ -675,6 +806,11 @@ W.model.actionManager._redoStack.length === 0  // Example of checking for an emp
         return false;
     }
 
+    /**
+     * Handles segment add/edit/delete events from WME model
+     * @param {Object} evt - WME event object
+     * @description Routes segment changes to the processing queue
+     */
     function segmentsEvent(evt) {
         if (!evt || preventProcess())
             return;
@@ -710,6 +846,10 @@ W.model.actionManager._redoStack.length === 0  // Example of checking for an emp
         }
     }
 
+    /**
+     * Handles house number ID changes (renumbering)
+     * @param {Object} evt - WME event object with old and new IDs
+     */
     function objectsChangedIdHNs(evt) {
         if (!evt || preventProcess())
             return;
@@ -745,6 +885,10 @@ W.model.actionManager._redoStack.length === 0  // Example of checking for an emp
         });
     }
 
+    /**
+     * Handles house number edits and updates
+     * @param {Object} evt - WME event object
+     */
     function objectsChangedHNs(evt) {
         if (!evt || preventProcess())
             return;
@@ -753,6 +897,10 @@ W.model.actionManager._redoStack.length === 0  // Example of checking for an emp
             _segmentsToProcess.push(getHNSegmentId(evt[0]));
     }
 
+    /**
+     * Handles house number deletion events
+     * @param {Object} evt - WME event object with deleted house numbers
+     */
     function objectsStateDeletedHNs(evt) {
         if (!evt || preventProcess())
             return;
@@ -762,6 +910,10 @@ W.model.actionManager._redoStack.length === 0  // Example of checking for an emp
         removeHNs(evt);
     }
 
+    /**
+     * Handles map zoom end event
+     * @description Redraws layers based on new zoom level
+     */
     function zoomEndEvent() {
         if (preventProcess())
             return;
@@ -773,6 +925,11 @@ W.model.actionManager._redoStack.length === 0  // Example of checking for an emp
         }
     }
 
+    /**
+     * Retrieves a house number object from the WME model
+     * @param {number|string} houseNumberId - The ID of the house number
+     * @returns {Object|null} House number object or null if not found
+     */
     function _getHNFromModel(houseNumberId) {
         if (typeof W === 'undefined' || !W.model?.segmentHouseNumbers) return null;
         return W.model.segmentHouseNumbers.getObjectById(houseNumberId)
@@ -780,12 +937,20 @@ W.model.actionManager._redoStack.length === 0  // Example of checking for an emp
             ?? null;
     }
 
+    /**
+     * Handles SDK event when a house number is drawn
+     * @param {Object} ev - SDK event object
+     */
     function _hnDrawEvent(ev) {
         if (preventProcess()) return;
         const hn = _getHNFromModel(ev.houseNumberId);
         if (hn) drawHNs([hn]);
     }
 
+    /**
+     * Handles SDK event when a house number is deleted
+     * @param {Object} ev - SDK event object
+     */
     function _hnDeleteEvent(ev) {
         if (preventProcess()) return;
         // houseNumberId IS the featureId; try both string and numeric key forms
@@ -793,13 +958,42 @@ W.model.actionManager._redoStack.length === 0  // Example of checking for an emp
         const idNum = parseInt(idStr, 10);
         const featureId = _allLineFeatures.has(idStr) ? idStr
             : (_allLineFeatures.has(idNum) ? idNum : null);
-        if (featureId === null) return;
-        const meta = _numberFeatureMeta.get(`n-${featureId}`);
-        removeHNs([{ getID: () => featureId, id: featureId, getSegmentId: () => meta?.segmentId ?? null, segmentId: meta?.segmentId ?? null }]);
+        if (featureId !== null) {
+            const meta = _numberFeatureMeta.get(`n-${featureId}`);
+            if (meta?.segmentId != null) _recentlyDeletedSegmentIds.add(meta.segmentId);
+            removeHNs([{ getID: () => featureId, id: featureId, getSegmentId: () => meta?.segmentId ?? null, segmentId: meta?.segmentId ?? null }]);
+        } else {
+            // featureId not found — reconcile all tracked HNs against the W model
+            // to remove any stale features (e.g. HN drawn with a temporary ID)
+            let hasStale = false;
+            _allLineFeatures.forEach((_, fid) => {
+                if (!_getHNFromModel(fid)) {
+                    // Capture segment ID before deleting meta
+                    const m = _numberFeatureMeta.get(`n-${fid}`);
+                    if (m?.segmentId != null) _recentlyDeletedSegmentIds.add(m.segmentId);
+                    _allLineFeatures.delete(fid);
+                    _allNumberFeatures.delete(fid);
+                    _numberFeatureMeta.delete(`n-${fid}`);
+                    _segmentHnIds.forEach((idSet, segId) => {
+                        if (idSet.has(fid)) {
+                            idSet.delete(fid);
+                            if (idSet.size === 0) _segmentHnIds.delete(segId);
+                        }
+                    });
+                    hasStale = true;
+                }
+            });
+            if (hasStale) _redrawHNLayers();
+        }
     }
 
+    /**
+     * Handles event when no edits are pending (clean save state)
+     * @description Triggers refresh of house numbers when save is complete
+     */
     function _noEditsEvent() {
         if (preventProcess()) return;
+        _recentlyDeletedSegmentIds.clear(); // Save confirmed — no undo possible
         processSegmentsToRemove(true, [..._segmentsToProcess]);
         const segsToProcess = wmeSDK
             ? _segmentsToProcess.map(id => wmeSDK.DataModel.Segments.getById({ segmentId: id })).filter(Boolean)
@@ -808,8 +1002,12 @@ W.model.actionManager._redoStack.length === 0  // Example of checking for an emp
         _segmentsToProcess = [];
     }
 
+    /**
+     * Handles undo/redo events
+     * @description Refreshes house numbers after undo operations
+     */
     function _afterUndoEvent() {
-        if (preventProcess() || _allLineFeatures.size === 0) return;
+        if (preventProcess()) return;
         // Reconcile tracked HN features against the W model. Any feature whose
         // HN no longer exists (e.g. after undoing an add) is removed from tracking.
         let hasStale = false;
@@ -828,8 +1026,22 @@ W.model.actionManager._redoStack.length === 0  // Example of checking for an emp
             }
         });
         if (hasStale) _redrawHNLayers();
+        // Re-fetch HNs for segments that had deletions — undo may have restored them
+        if (_recentlyDeletedSegmentIds.size > 0 && wmeSDK) {
+            const segsToRefetch = [..._recentlyDeletedSegmentIds]
+                .map(id => wmeSDK.DataModel.Segments.getById({ segmentId: id }))
+                .filter(Boolean);
+            _recentlyDeletedSegmentIds.clear();
+            if (segsToRefetch.length > 0)
+                processSegs('afterclearactions', segsToRefetch, true);
+        }
     }
 
+    /**
+     * Reloads house numbers from the current map view
+     * @async
+     * @description Triggered by reload button in UI
+     */
     async function reloadClicked() {
         if (preventProcess() || document.querySelector('wz-button.overlay-button.reload-button').classList.contains('disabled'))
             return;
@@ -838,22 +1050,13 @@ W.model.actionManager._redoStack.length === 0  // Example of checking for an emp
         processSegs('reload', allSegments.filter((o) => o && (typeof o.getAttribute === 'function' ? o.getAttribute('hasHNs') : o.hasHouseNumbers)));
     }
 
+    /**
+     * Initializes background tasks and event listeners
+     * @param {string} status - Status parameter (unused in current implementation)
+     * @description Sets up all WME event listeners for segment and house number changes
+     */
     function initBackgroundTasks(status) {
         if (status === 'enable') {
-            _saveButtonObserver = new MutationObserver((mutationsList) => {
-                const redoStackEmpty = typeof W !== 'undefined' && W.model && W.model.actionManager ? (W.model.actionManager._redoStack.length === 0) : true;
-                if ((redoStackEmpty)
-                    && mutationsList.some((mutation) => ((mutation.attributeName === 'disabled')
-                            && (mutation.oldValue === 'true')
-                            && (mutation.target.disabled === true)))
-                ) {
-                    processSegmentsToRemove();
-                }
-            });
-            _saveButtonObserver.observe(document.getElementById('save-button'), {
-                childList: false, attributes: true, attributeOldValue: true, characterData: false, characterDataOldValue: false, subtree: false
-            });
-            _saveButtonObserver.observing = true;
             document.querySelector('wz-button.overlay-button.reload-button')?.addEventListener('click', reloadClicked);
             
             // Register SDK data model event listeners for segments (SDK mandatory)
@@ -903,11 +1106,16 @@ W.model.actionManager._redoStack.length === 0  // Example of checking for an emp
                 wmeSDK.Events.on({ eventName: 'wme-house-number-deleted', eventHandler: _hnDeleteEvent });
                 wmeSDK.Events.on({ eventName: 'wme-no-edits', eventHandler: _noEditsEvent });
                 wmeSDK.Events.on({ eventName: 'wme-after-undo', eventHandler: _afterUndoEvent });
+                // Detect save state: fires when redo stack is cleared after save
+                eventHandlers.afterRedoClear = () => {
+                    logDebug('Save detected via redo-clear event');
+                    processSegmentsToRemove(true, [..._segmentsToProcess]);
+                };
+                wmeSDK.Events.on({ eventName: 'wme-after-redo-clear', eventHandler: eventHandlers.afterRedoClear });
             }
             _scriptActive = true;
         }
         else if (status === 'disable') {
-            _saveButtonObserver = undefined;
             document.querySelector('wz-button.overlay-button.reload-button')?.removeEventListener('click', reloadClicked);
             
             // Remove SDK event listeners (SDK mandatory)
@@ -926,12 +1134,19 @@ W.model.actionManager._redoStack.length === 0  // Example of checking for an emp
                 wmeSDK.Events.off({ eventName: 'wme-house-number-deleted', eventHandler: _hnDeleteEvent });
                 wmeSDK.Events.off({ eventName: 'wme-no-edits', eventHandler: _noEditsEvent });
                 wmeSDK.Events.off({ eventName: 'wme-after-undo', eventHandler: _afterUndoEvent });
+                wmeSDK.Events.off({ eventName: 'wme-after-redo-clear', eventHandler: eventHandlers.afterRedoClear });
             }
             _scriptActive = false;
         }
         return Promise.resolve();
     }
 
+    /**
+     * Enters house number edit mode for a specific segment
+     * @param {Object} segment - The segment object to edit
+     * @param {boolean} moveMap - If true, center map on segment
+     * @description Opens the HN editor panel for the segment
+     */
     function enterHNEditMode(segment, moveMap) {
         if (segment && wmeSDK) {
             if (moveMap) {
@@ -950,6 +1165,11 @@ W.model.actionManager._redoStack.length === 0  // Example of checking for an emp
         }
     }
 
+    /**
+     * Shows a tooltip when hovering over a house number feature
+     * @param {Event} evt - Mouse event object
+     * @description Displays information and edit links for the hovered HN
+     */
     function showTooltip(evt) {
         if ((getMapZoom() < 16) || !_settings.enableTooltip)
             return;
@@ -1017,12 +1237,19 @@ W.model.actionManager._redoStack.length === 0  // Example of checking for an emp
         }
     }
 
+    /**
+     * Strips potentially unsafe HTML from tooltip content
+     * @description Sanitizes user-generated content before display
+     */
     function stripTooltipHTML() {
         checkTimeout({ timeout: 'stripTooltipHTML' });
         _hnNavPointsTooltipDiv.replaceChildren();
         _popup = { segmentId: -1, hnNumber: -1, inUse: false };
     }
 
+    /**
+     * Hides the tooltip immediately
+     */
     function hideTooltip() {
         checkTimeout({ timeout: 'hideTooltip' });
         _hnNavPointsTooltipDiv.querySelector('#hnNavPointsTooltipDiv-content')?.setAttribute('data-state', 'hidden');
@@ -1030,6 +1257,11 @@ W.model.actionManager._redoStack.length === 0  // Example of checking for an emp
         _timeouts.stripTooltipHTML = window.setTimeout(stripTooltipHTML, 400);
     }
 
+    /**
+     * Hides the tooltip with a delay
+     * @param {Event} evt - Mouse event object
+     * @description Provides a delay to allow movement to tooltip without hiding
+     */
     function hideTooltipDelay(evt) {
         if (!evt)
             return;
@@ -1040,10 +1272,17 @@ W.model.actionManager._redoStack.length === 0  // Example of checking for an emp
         _timeouts.hideTooltip = window.setTimeout(hideTooltip, 100, evt);
     }
 
+    /**
+     * Manages tooltip display/hide based on feature hovering
+     */
     function checkTooltip() {
         checkTimeout({ timeout: 'hideTooltip' });
     }
 
+    /**
+     * Checks if a newer version of the script is available
+     * @description Compares local version with Greasy Fork version
+     */
     function checkHnNavpointsVersion() {
         if (_IS_ALPHA_VERSION)
             return;
@@ -1057,6 +1296,16 @@ W.model.actionManager._redoStack.length === 0  // Example of checking for an emp
         }
     }
 
+    /**
+     * Main initialization function - entry point for the script
+     * @async
+     * @description Called when WazeWrap is ready. Sets up:
+     * - Settings UI in WME preferences
+     * - Map layers for house numbers
+     * - Event listeners for WME changes
+     * - SDK initialization
+     * - Background task processing
+     */
     async function onWazeWrapReady() {
         log('Initializing.');
         checkHnNavpointsVersion();
