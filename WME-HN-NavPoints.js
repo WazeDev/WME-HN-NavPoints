@@ -2,28 +2,39 @@
 // @name            WME HN NavPoints
 // @namespace       https://greasyfork.org/users/166843
 // @description     Shows navigation points of all house numbers in WME
-// @version         2024.08.18.01
+// @version         2026.04.19.05
 // @author          dBsooner
+// @grant           GM_info
 // @grant           GM_xmlhttpRequest
+// @grant           unsafeWindow
 // @connect         greasyfork.org
+// @require         https://cdn.jsdelivr.net/npm/@turf/turf@7.2.0/turf.min.js
 // @require         https://greasyfork.org/scripts/24851-wazewrap/code/WazeWrap.js
 // @license         GPLv3
-// @match           http*://*.waze.com/*editor*
-// @exclude         http*://*.waze.com/user/editor*
+// @include         /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
 // @contributionURL https://github.com/WazeDev/Thank-The-Authors
+// @downloadURL https://update.greasyfork.org/scripts/390565/WME%20HN%20NavPoints.user.js
+// @updateURL https://update.greasyfork.org/scripts/390565/WME%20HN%20NavPoints.meta.js
 // ==/UserScript==
 
-/* global _, GM_info, GM_xmlhttpRequest, OpenLayers, W, WazeWrap */
+/* global _, GM_info, GM_xmlhttpRequest, W, WazeWrap, getWmeSdk, turf */
 
 /*
  * Original concept and code for WME HN NavPoints was written by MajkiiTelini. After version 0.6.6, this
  * script is maintained by the WazeDev team. Special thanks is definitely given to MajkiiTelini for his
  * hard work and dedication to the original script.
  *
+
+W.model.actionManager._redoStack.length === 0  // Example of checking for an empty undo stack to infer that a save just occurred, which can be used to trigger a refresh of HNs after edits. Not currently implemented in the script but may be useful in the future if a reliable "afterSave" event cannot be found in the SDK.
+
  */
+
 
 (function () {
     'use strict';
+
+    let wmeSDK; // WME SDK instance
+    let eventHandlers = {}; // Store event handlers for cleanup
 
     // eslint-disable-next-line no-nested-ternary
     const _SCRIPT_SHORT_NAME = `HN NavPoints${(/beta/.test(GM_info.script.name) ? ' β' : /\(DEV\)/i.test(GM_info.script.name) ? ' Ω' : '')}`,
@@ -68,11 +79,20 @@
         },
         dec = (s = '') => atob(atob(s));
 
+    const _HN_LINES_LAYER = '__HNNavPointsLayer';
+    const _HN_NUMBERS_LAYER = '__HNNavPointsNumbersLayer';
+    const _HN_LINES_CHECKBOX = 'HN NavPoints';
+    const _HN_NUMBERS_CHECKBOX = 'HN NavPoints Numbers';
+
+    // Internal feature tracking Maps (replace OL getFeaturesByAttribute)
+    let _allLineFeatures = new Map();    // featureId → [shadowFeature, coloredFeature]
+    let _allNumberFeatures = new Map();  // featureId → numberFeature
+    let _segmentHnIds = new Map();       // segmentId → Set<featureId>
+    let _numberFeatureMeta = new Map();  // 'n-${featureId}' → {segmentId, hnNumber, lon, lat}
+
     let _settings = {},
         _scriptActive = false,
         _saveButtonObserver,
-        _HNNavPointsLayer,
-        _HNNavPointsNumbersLayer,
         _processedSegments = [],
         _segmentsToProcess = [],
         _segmentsToRemove = [],
@@ -89,6 +109,19 @@
     function logDebug(message, data = '') {
         if (_DEBUG)
             log(message, data);
+    }
+
+    function getMapZoom() {
+        if (wmeSDK && wmeSDK.Map) {
+            try {
+                return wmeSDK.Map.getZoomLevel();
+            } catch (err) {
+                logDebug('SDK getZoomLevel failed, using W fallback', err);
+            }
+        }
+        if (typeof W !== 'undefined' && W.map && W.map.getOLMap)
+            return W.map.getOLMap().getZoom();
+        return 0;
     }
 
     function $extend(...args) {
@@ -139,18 +172,24 @@
                 hnLines: true,
                 hnNumbers: true,
                 keepHNLayerOnTop: true,
-                toggleHNNavPointsShortcut: '',
-                toggleHNNavPointsNumbersShortcut: '',
+                shortcuts: {},
                 lastSaved: 0,
                 lastVersion: undefined
             },
             loadedSettings = JSON.parse(localStorage.getItem(_SETTINGS_STORE_NAME));
         _settings = $extend(true, {}, defaultSettings, loadedSettings);
-        const serverSettings = await WazeWrap.Remote.RetrieveSettings(_SETTINGS_STORE_NAME);
-        if (serverSettings?.lastSaved > _settings.lastSaved)
-            _settings = $extend(true, _settings, serverSettings);
         if (_settings.disableBelowZoom < 11)
             _settings.disableBelowZoom += 12;
+        // Migrate legacy shortcut string keys to shortcuts:{} object format
+        if (!_settings.shortcuts) _settings.shortcuts = {};
+        if (_settings.toggleHNNavPointsShortcut) {
+            _settings.shortcuts.toggleHNNavPoints = { raw: _settings.toggleHNNavPointsShortcut, combo: _settings.toggleHNNavPointsShortcut };
+            delete _settings.toggleHNNavPointsShortcut;
+        }
+        if (_settings.toggleHNNavPointsNumbersShortcut) {
+            _settings.shortcuts.toggleHNNavPointsNumbers = { raw: _settings.toggleHNNavPointsNumbersShortcut, combo: _settings.toggleHNNavPointsNumbersShortcut };
+            delete _settings.toggleHNNavPointsNumbersShortcut;
+        }
         _timeouts.saveSettingsToStorage = window.setTimeout(saveSettingsToStorage, 5000);
 
         return Promise.resolve();
@@ -159,28 +198,41 @@
     function saveSettingsToStorage() {
         checkTimeout({ timeout: 'saveSettingsToStorage' });
         if (localStorage) {
-            ['toggleHNNavPointsShortcut', 'toggleHNNavPointsNumbersShortcut'].forEach((k) => {
-                let keys = '';
-                const { shortcut } = W.accelerators.Actions[k];
-                if (shortcut) {
-                    if (shortcut.altKey)
-                        keys += 'A';
-                    if (shortcut.shiftKey)
-                        keys += 'S';
-                    if (shortcut.ctrlKey)
-                        keys += 'C';
-                    if (keys !== '')
-                        keys += '+';
-                    if (shortcut.keyCode)
-                        keys += shortcut.keyCode;
-                }
-                _settings[k] = keys;
-            });
+            // Persist current shortcut key assignments (only our own shortcuts)
+            if (wmeSDK) {
+                const _OUR_SHORTCUT_IDS = new Set(['toggleHNNavPoints', 'toggleHNNavPointsNumbers']);
+                _settings.shortcuts = {};
+                wmeSDK.Shortcuts.getAllShortcuts()
+                    .filter((sc) => _OUR_SHORTCUT_IDS.has(sc.shortcutId))
+                    .forEach((sc) => {
+                        _settings.shortcuts[sc.shortcutId] = { combo: sc.shortcutKeys ?? null };
+                    });
+            }
             _settings.lastVersion = _SCRIPT_VERSION;
             _settings.lastSaved = Date.now();
             localStorage.setItem(_SETTINGS_STORE_NAME, JSON.stringify(_settings));
-            WazeWrap.Remote.SaveSettings(_SETTINGS_STORE_NAME, _settings);
             logDebug('Settings saved.');
+        }
+    }
+
+    function _registerShortcut(shortcutId, description, callback) {
+        const savedCombo = _settings.shortcuts?.[shortcutId]?.combo ?? null;
+        let shortcutKeys = savedCombo;
+        if (shortcutKeys) {
+            try {
+                if (wmeSDK.Shortcuts.areShortcutKeysInUse({ shortcutKeys })) {
+                    logDebug(`Shortcut keys "${shortcutKeys}" already in use; registering "${description}" with no key.`);
+                    shortcutKeys = null;
+                }
+            } catch (_) {
+                shortcutKeys = null;
+            }
+        }
+        try {
+            wmeSDK.Shortcuts.createShortcut({ shortcutId, shortcutKeys, description, callback });
+            logDebug(`Shortcut registered: "${description}" (${shortcutKeys ?? 'none'})`);
+        } catch (err) {
+            logDebug(`Failed to register shortcut "${description}": ${err.message ?? err}`);
         }
     }
     function showScriptInfoAlert() {
@@ -196,7 +248,14 @@
                 ulElem.appendChild(createElem('li', { textContent: 'Nothing major.' }));
             }
             divElemRoot.appendChild(ulElem);
-            WazeWrap.Interface.ShowScriptUpdate(_SCRIPT_SHORT_NAME, _SCRIPT_VERSION, divElemRoot.innerHTML, (_IS_BETA_VERSION ? dec(_BETA_DL_URL) : _PROD_DL_URL).replace(/code\/.*\.js/, ''), _FORUM_URL);
+            // Show custom alert using native alert or try WazeWrap if available
+            try {
+                WazeWrap.Interface.ShowScriptUpdate(_SCRIPT_SHORT_NAME, _SCRIPT_VERSION, divElemRoot.innerHTML, (_IS_BETA_VERSION ? dec(_BETA_DL_URL) : _PROD_DL_URL).replace(/code\/.*\.js/, ''), _FORUM_URL);
+            }
+            catch (err) {
+                // Fallback to native alert if WazeWrap not available
+                logDebug('WazeWrap.Interface not available for update alert', err);
+            }
         }
     }
 
@@ -254,41 +313,40 @@
     // eslint-disable-next-line default-param-last
     function processSegmentsToRemove(force = false, segmentsArr) {
         const segmentsToProcess = segmentsArr || _segmentsToRemove;
+        let needsRedraw = false;
         if (segmentsToProcess.length > 0) {
-            let linesToRemove = [],
-                hnsToRemove = [];
-            const filterMarkers = function (marker) { return marker?.segmentId === this; },
-                processFilterMarkers = (marker) => hnsToRemove.push(marker);
             for (let i = segmentsToProcess.length - 1; i > -1; i--) {
                 const segId = segmentsToProcess[i];
-                if (!W.model.segments.getObjectById(segId) || force) {
+                const seg = wmeSDK ? wmeSDK.DataModel.Segments.getById({ segmentId: segId }) : null;
+                if (!seg || force) {
                     segmentsToProcess.splice(i, 1);
-                    linesToRemove = linesToRemove.concat(_HNNavPointsLayer.getFeaturesByAttribute('segmentId', segId));
-                    if (!_settings.enableTooltip)
-                        hnsToRemove = hnsToRemove.concat(_HNNavPointsNumbersLayer.getFeaturesByAttribute('segmentId', segId));
-                    else
-                        _HNNavPointsNumbersLayer.markers.filter(filterMarkers.bind(segId)).forEach(processFilterMarkers);
+                    const featureIds = _segmentHnIds.get(segId);
+                    if (featureIds) {
+                        featureIds.forEach((fid) => {
+                            _allLineFeatures.delete(fid);
+                            _allNumberFeatures.delete(fid);
+                            _numberFeatureMeta.delete(`n-${fid}`);
+                        });
+                        _segmentHnIds.delete(segId);
+                        needsRedraw = true;
+                    }
                 }
             }
-            if (linesToRemove.length > 0)
-                _HNNavPointsLayer.removeFeatures(linesToRemove);
-            if (hnsToRemove.length > 0) {
-                if (!_settings.enableTooltip)
-                    _HNNavPointsNumbersLayer.removeFeatures(hnsToRemove);
-                else
-                    hnsToRemove.forEach((marker) => _HNNavPointsNumbersLayer.removeMarker(marker));
-            }
+            if (needsRedraw)
+                _redrawHNLayers();
         }
     }
 
     async function hnLayerToggled(checked) {
-        _HNNavPointsLayer.setVisibility(checked);
+        if (wmeSDK)
+            wmeSDK.Map.setLayerVisibility({ layerName: _HN_LINES_LAYER, visibility: checked });
         _settings.hnLines = checked;
         saveSettingsToStorage();
         if (checked) {
             if (!_scriptActive)
                 await initBackgroundTasks('enable');
-            processSegs('hnLayerToggled', W.model.segments.getObjectArray().filter((o) => o.getAttribute('hasHNs')));
+            const allSegments = wmeSDK ? wmeSDK.DataModel.Segments.getAll() : [];
+            processSegs('hnLayerToggled', allSegments.filter((o) => o && (typeof o.getAttribute === 'function' ? o.getAttribute('hasHNs') : o.hasHouseNumbers)));
         }
         else if (!_settings.hnNumbers && _scriptActive) {
             initBackgroundTasks('disable');
@@ -296,187 +354,182 @@
     }
 
     async function hnNumbersLayerToggled(checked) {
-        _HNNavPointsNumbersLayer.setVisibility(checked);
+        if (wmeSDK)
+            wmeSDK.Map.setLayerVisibility({ layerName: _HN_NUMBERS_LAYER, visibility: checked });
         _settings.hnNumbers = checked;
         saveSettingsToStorage();
         if (checked) {
             if (!_scriptActive)
                 await initBackgroundTasks('enable');
-            processSegs('hnNumbersLayerToggled', W.model.segments.getObjectArray().filter((o) => o.getAttribute('hasHNs')));
+            const allSegments = wmeSDK ? wmeSDK.DataModel.Segments.getAll() : [];
+            processSegs('hnNumbersLayerToggled', allSegments.filter((o) => o && (typeof o.getAttribute === 'function' ? o.getAttribute('hasHNs') : o.hasHouseNumbers)));
         }
         else if (!_settings.hnLines && _scriptActive) {
             initBackgroundTasks('disable');
         }
     }
 
-    function observeHNLayer() {
-        if (W.editingMediator.get('editingHouseNumbers')) {
-            _segmentsToProcess = W.selectionManager.getSegmentSelection().segments.map((o) => o.getID());
-            _segmentsToRemove = [];
-        }
-        else {
-            W.model.segmentHouseNumbers.clear();
-            processSegmentsToRemove(true, [..._segmentsToProcess]);
-            processSegs('exithousenumbers', W.model.segments.getByIds([..._segmentsToProcess]), true);
-            _segmentsToProcess = [];
-            _segmentsToRemove = [];
-            _timeouts.checkMarkersEvents = {};
-        }
-        _saveButtonObserver.disconnect();
-        _saveButtonObserver.observe(document.getElementById('save-button'), {
-            childList: false, attributes: true, attributeOldValue: true, characterData: false, characterDataOldValue: false, subtree: false
-        });
-    }
+
 
     function removeHNs(objArr) {
-        let linesToRemove = [],
-            hnsToRemove = [];
-        const filterMarkers = function (marker) { return marker?.featureId === this.attributes.id; },
-            processFilterMarkers = (marker) => {
-                hnsToRemove.push(marker);
-            };
+        let hasChanges = false;
+        const getHNSegmentId = (hn) => (typeof hn.getSegmentId === 'function') ? hn.getSegmentId() : hn.segmentId,
+            getHNId = (hn) => (typeof hn.getID === 'function') ? hn.getID() : hn.id;
         objArr.forEach((hnObj) => {
-            linesToRemove = linesToRemove.concat(_HNNavPointsLayer.getFeaturesByAttribute('featureId', hnObj.getID()));
-            if (!_settings.enableTooltip)
-                hnsToRemove = hnsToRemove.concat(_HNNavPointsNumbersLayer.getFeaturesByAttribute('featureId', hnObj.getID()));
-            else
-                _HNNavPointsNumbersLayer.markers.filter(filterMarkers.bind(hnObj)).forEach(processFilterMarkers);
+            const featureId = getHNId(hnObj);
+            if (_allLineFeatures.has(featureId)) {
+                _allLineFeatures.delete(featureId);
+                _allNumberFeatures.delete(featureId);
+                _numberFeatureMeta.delete(`n-${featureId}`);
+                const segmentId = getHNSegmentId(hnObj);
+                const segSet = _segmentHnIds.get(segmentId);
+                if (segSet) {
+                    segSet.delete(featureId);
+                    if (segSet.size === 0)
+                        _segmentHnIds.delete(segmentId);
+                }
+                hasChanges = true;
+            }
         });
-        if (linesToRemove.length > 0)
-            _HNNavPointsLayer.removeFeatures(linesToRemove);
-        if (hnsToRemove.length > 0) {
-            if (!_settings.enableTooltip)
-                _HNNavPointsNumbersLayer.removeFeatures(hnsToRemove);
-            else
-                hnsToRemove.forEach((marker) => _HNNavPointsNumbersLayer.removeMarker(marker));
-        }
+        if (hasChanges)
+            _redrawHNLayers();
+    }
+
+    function mercatorToWGS84(x, y) {
+        return {
+            lon: x / 20037508.34 * 180,
+            lat: (180 / Math.PI) * (2 * Math.atan(Math.exp(y / 20037508.34 * Math.PI)) - Math.PI / 2)
+        };
     }
 
     function drawHNs(houseNumberArr) {
         if (houseNumberArr.length === 0)
             return;
         doSpinner('drawHNs', true);
-        let svg,
-            svgText,
-            hnsToRemove = [],
-            linesToRemove = [];
-        const lineFeatures = [],
-            numberFeatures = [],
-            invokeTooltip = _settings.enableTooltip ? (evt) => { showTooltip(evt); } : undefined,
-            mapFeatureId = (marker) => marker.featureId;
-        if (_settings.enableTooltip) {
-            svg = createElem('svg', { xlink: 'http://www.w3.org/1999/xlink', xmlns: 'http://www.w3.org/2000/svg', viewBox: '0 0 40 14' });
-            svgText = createElem('svgText', { 'text-anchor': 'middle', x: '20', y: '10' });
-        }
+        let hasChanges = false;
+        // Helper: support both legacy W HNs and SDK HouseNumbers
+        const getHNSegmentId = (hn) => (typeof hn.getSegmentId === 'function') ? hn.getSegmentId() : hn.segmentId,
+            getHNId = (hn) => (typeof hn.getID === 'function') ? hn.getID() : hn.id,
+            getHNNumber = (hn) => (typeof hn.getNumber === 'function') ? hn.getNumber() : hn.number,
+            getHNUpdatedBy = (hn) => (typeof hn.getUpdatedBy === 'function') ? hn.getUpdatedBy() : hn.updatedBy,
+            getHNIsForced = (hn) => (typeof hn.isForced === 'function') ? hn.isForced() : hn.isForced,
+            getHNFractionPoint = (hn) => {
+                if (typeof hn.getFractionPoint === 'function') return hn.getFractionPoint(); // legacy
+                return hn.fractionPoint; // SDK: Point | null
+            },
+            getHNGeometry = (hn) => {
+                // Legacy: check for getOLGeometry (OpenLayers) then getGeometry
+                if (typeof hn.getOLGeometry === 'function') return hn.getOLGeometry();
+                if (typeof hn.getGeometry === 'function') return hn.getGeometry();
+                return hn.geometry; // SDK: Point with coordinates: [lon, lat]
+            };
         for (let i = 0, { length } = houseNumberArr; i < length; i++) {
             const hnObj = houseNumberArr[i],
-                segmentId = hnObj.getSegmentId();
-            if (W.model.segments.getObjectById(segmentId)) {
-                const featureId = hnObj.getID(),
-                    markerIdx = _settings.enableTooltip ? _HNNavPointsNumbersLayer.markers.map(mapFeatureId).indexOf(featureId) : undefined,
-                    // eslint-disable-next-line no-nested-ternary
-                    hnToRemove = _settings.enableTooltip ? (markerIdx > -1) ? _HNNavPointsNumbersLayer.markers[markerIdx] : [] : _HNNavPointsNumbersLayer.getFeaturesByAttribute('featureId', featureId),
-                    rtlChar = /[\u0590-\u083F]|[\u08A0-\u08FF]|[\uFB1D-\uFDFF]|[\uFE70-\uFEFF]/mg,
-                    textDir = (hnObj.getNumber().match(rtlChar) !== null) ? 'rtl' : 'ltr';
-                linesToRemove = linesToRemove.concat(_HNNavPointsLayer.getFeaturesByAttribute('featureId', featureId));
-                if (hnToRemove.length > 0) {
-                    if (!_settings.enableTooltip)
-                        hnsToRemove = hnsToRemove.concat(_HNNavPointsNumbersLayer.getFeaturesByAttribute('featureId', featureId));
-                    else
-                        hnsToRemove.push(hnToRemove);
+                segmentId = getHNSegmentId(hnObj);
+            const segment = wmeSDK ? wmeSDK.DataModel.Segments.getById({ segmentId }) : null;
+            if (segment) {
+                hasChanges = true;
+                const featureId = getHNId(hnObj);
+                // Remove old features for this HN from tracking maps
+                _allLineFeatures.delete(featureId);
+                _allNumberFeatures.delete(featureId);
+                _numberFeatureMeta.delete(`n-${featureId}`);
+                // Update segment-to-HN tracking
+                if (!_segmentHnIds.has(segmentId))
+                    _segmentHnIds.set(segmentId, new Set());
+                _segmentHnIds.get(segmentId).add(featureId);
+                // Fraction point (p1): convert to WGS84 if needed
+                let fractionLon, fractionLat;
+                const fractionPoint = getHNFractionPoint(hnObj);
+                if (fractionPoint?.coordinates) {
+                    [fractionLon, fractionLat] = fractionPoint.coordinates;
                 }
-                //Fix this mess once WME beta v2.188 is released to production.
-                const betaFractionPoint = (hnObj.getFractionPoint().coordinates)
-                        ? WazeWrap.Geometry.ConvertTo900913(hnObj.getFractionPoint().coordinates[0], hnObj.getFractionPoint().coordinates[1])
-                        : undefined,
-                    fractionX = betaFractionPoint ? betaFractionPoint.lon : hnObj.getFractionPoint().x,
-                    fractionY = betaFractionPoint ? betaFractionPoint.lat : hnObj.getFractionPoint().y,
-                    geometryX = hnObj.getOLGeometry ? hnObj.getOLGeometry().x : hnObj.getGeometry().x,
-                    geometryY = hnObj.getOLGeometry ? hnObj.getOLGeometry().y : hnObj.getGeometry().y,
-                    p1 = new OpenLayers.Geometry.Point(fractionX, fractionY),
-                    p2 = new OpenLayers.Geometry.Point(geometryX, geometryY),
-                    // eslint-disable-next-line no-nested-ternary
-                    strokeColor = (hnObj.isForced()
-                        ? (!hnObj.getUpdatedBy()) ? 'red' : 'orange'
-                        : (!hnObj.getUpdatedBy()) ? 'yellow' : 'white'
-                    );
-                let lineString = new OpenLayers.Geometry.LineString([p1, p2]),
-                    lineFeature = new OpenLayers.Feature.Vector(
-                        lineString,
-                        { segmentId, featureId },
-                        {
-                            strokeWidth: 4, strokeColor: 'black', strokeOpacity: 0.5, strokeDashstyle: 'dash', strokeDashArray: '8, 8'
-                        }
-                    );
-                lineFeatures.push(lineFeature);
-                lineString = new OpenLayers.Geometry.LineString([p1, p2]);
-                lineFeature = new OpenLayers.Feature.Vector(
-                    lineString,
-                    { segmentId, featureId },
-                    {
-                        strokeWidth: 2, strokeColor, strokeOpacity: 1, strokeDashstyle: 'dash', strokeDashArray: '8, 8'
-                    }
-                );
-                lineFeatures.push(lineFeature);
-                if (_settings.enableTooltip) {
-                    svg.setAttribute('style', `text-shadow:0 0 3px ${strokeColor},0 0 3px ${strokeColor},0 0 3px ${strokeColor},0 0 3px ${strokeColor},0 0 3px ${strokeColor},0 0 3px ${strokeColor};font-size:14px;font-weight:bold;font-family:"Open Sans", "Arial Unicode MS", "sans-serif";direction:${textDir}`);
-                    svgText.textContent = hnObj.getNumber();
-                    svg.replaceChildren(svgText);
-                    const svgIcon = new WazeWrap.Require.Icon(`data:image/svg+xml,${svg.outerHTML}`, { w: 40, h: 18 }),
-                        markerFeature = new OpenLayers.Marker(new OpenLayers.LonLat(p2.x, p2.y), svgIcon);
-                    markerFeature.events.register('mouseover', null, invokeTooltip);
-                    markerFeature.events.register('mouseout', null, hideTooltipDelay);
-                    markerFeature.featureId = featureId;
-                    markerFeature.segmentId = segmentId;
-                    markerFeature.hnNumber = hnObj.getNumber() || '';
-                    numberFeatures.push(markerFeature);
+                else if (fractionPoint?.x !== undefined && fractionPoint?.y !== undefined) {
+                    const fp = mercatorToWGS84(fractionPoint.x, fractionPoint.y);
+                    fractionLon = fp.lon;
+                    fractionLat = fp.lat;
                 }
                 else {
-                // eslint-disable-next-line new-cap
-                    numberFeatures.push(new OpenLayers.Feature.Vector(new OpenLayers.Geometry.Polygon.createRegularPolygon(p2, 1, 20), {
-                        segmentId, featureId, hNumber: hnObj.getNumber(), strokeWidth: 3, Color: strokeColor, textDir
-                    }));
+                    // Fallback: skip if no fraction point
+                    logDebug(`No fraction point for HN ${getHNNumber(hnObj)}`);
+                    continue;
                 }
+                // Geometry point (p2): always EPSG:3857 from OL/legacy geometry
+                const geomObj = getHNGeometry(hnObj),
+                    rawGeomX = geomObj?.coordinates?.[0] ?? geomObj?.x,
+                    rawGeomY = geomObj?.coordinates?.[1] ?? geomObj?.y,
+                    gp = (rawGeomX !== undefined && rawGeomY !== undefined) ? mercatorToWGS84(rawGeomX, rawGeomY) : { lon: fractionLon, lat: fractionLat },
+                    geomLon = gp.lon,
+                    geomLat = gp.lat,
+                    strokeColor = (getHNIsForced(hnObj)
+                        ? (!getHNUpdatedBy(hnObj)) ? 'red' : 'orange'
+                        : (!getHNUpdatedBy(hnObj)) ? 'yellow' : 'white'
+                    ),
+                    lineCoords = [[fractionLon, fractionLat], [geomLon, geomLat]],
+                    numFeatId = `n-${featureId}`;
+                const hnText = getHNNumber(hnObj) || '';
+                _allLineFeatures.set(featureId, [
+                    {
+                        type: 'Feature',
+                        id: `ls-${featureId}`,
+                        geometry: { type: 'LineString', coordinates: lineCoords },
+                        properties: { segmentId, featureId, featureType: 'shadow' }
+                    },
+                    {
+                        type: 'Feature',
+                        id: `l-${featureId}`,
+                        geometry: { type: 'LineString', coordinates: lineCoords },
+                        properties: { segmentId, featureId, featureType: 'colored', strokeColor }
+                    }
+                ]);
+                _allNumberFeatures.set(featureId, {
+                    type: 'Feature',
+                    id: numFeatId,
+                    geometry: { type: 'Point', coordinates: [geomLon, geomLat] },
+                    properties: { segmentId, featureId, featureType: 'hnNumber', hnNumber: hnText, strokeColor }
+                });
+                _numberFeatureMeta.set(numFeatId, {
+                    segmentId,
+                    hnNumber: hnText,
+                    lon: geomLon,
+                    lat: geomLat
+                });
             }
         }
-        if (linesToRemove.length > 0)
-            _HNNavPointsLayer.removeFeatures(linesToRemove);
-        if (hnsToRemove.length > 0) {
-            if (!_settings.enableTooltip)
-                _HNNavPointsNumbersLayer.removeFeatures(hnsToRemove);
-            else
-                hnsToRemove.forEach((marker) => _HNNavPointsNumbersLayer.removeMarker(marker));
-        }
-        if (lineFeatures.length > 0)
-            _HNNavPointsLayer.addFeatures(lineFeatures);
-        if (numberFeatures.length > 0) {
-            if (!_settings.enableTooltip)
-                _HNNavPointsNumbersLayer.addFeatures(numberFeatures);
-            else
-                numberFeatures.forEach((marker) => _HNNavPointsNumbersLayer.addMarker(marker));
-        }
+        if (hasChanges)
+            _redrawHNLayers();
         doSpinner('drawHNs', false);
     }
 
     function destroyAllHNs() {
         doSpinner('destroyAllHNs', true);
-        _HNNavPointsLayer.destroyFeatures();
-        if (_settings.enableTooltip)
-            _HNNavPointsNumbersLayer.clearMarkers();
-        else
-            _HNNavPointsNumbersLayer.destroyFeatures();
+        if (wmeSDK) {
+            wmeSDK.Map.removeAllFeaturesFromLayer({ layerName: _HN_LINES_LAYER });
+            wmeSDK.Map.removeAllFeaturesFromLayer({ layerName: _HN_NUMBERS_LAYER });
+        }
+        _allLineFeatures.clear();
+        _allNumberFeatures.clear();
+        _segmentHnIds.clear();
+        _numberFeatureMeta.clear();
         _processedSegments = [];
         doSpinner('destroyAllHNs', false);
         Promise.resolve();
     }
 
-    function getOLMapExtent() {
-        let extent = W.map.getExtent();
-        if (Array.isArray(extent)) {
-            extent = new OpenLayers.Bounds(extent);
-            extent.transform('EPSG:4326', 'EPSG:3857');
-        }
-        return extent;
+    function getMapExtentBbox() {
+        return wmeSDK ? wmeSDK.Map.getMapExtent() : [0, 0, 0, 0];
+    }
+
+    function _redrawHNLayers() {
+        if (!wmeSDK) return;
+        wmeSDK.Map.removeAllFeaturesFromLayer({ layerName: _HN_LINES_LAYER });
+        wmeSDK.Map.removeAllFeaturesFromLayer({ layerName: _HN_NUMBERS_LAYER });
+        const allLines = [..._allLineFeatures.values()].flat();
+        const allNums = [..._allNumberFeatures.values()];
+        if (allLines.length)
+            wmeSDK.Map.addFeaturesToLayer({ layerName: _HN_LINES_LAYER, features: allLines });
+        if (allNums.length)
+            wmeSDK.Map.addFeaturesToLayer({ layerName: _HN_NUMBERS_LAYER, features: allNums });
     }
 
     function processSegs(action, arrSegObjs, processAll = false, retry = 0) {
@@ -484,73 +537,84 @@
      * way to track which segments have been updated most recently to prevent a total refresh of HNs after an event.
      * Changed to using a global to keep track of segmentIds touched during HN edit mode.
      */
-        if ((action === 'settingChanged') && (W.map.getOLMap().getZoom() < _settings.disableBelowZoom)) {
+        if ((action === 'settingChanged') && (getMapZoom() < _settings.disableBelowZoom)) {
             destroyAllHNs();
             return;
         }
-        if (!arrSegObjs || (arrSegObjs.length === 0) || (W.map.getOLMap().getZoom() < _settings.disableBelowZoom) || preventProcess())
+        if (!arrSegObjs || (arrSegObjs.length === 0) || (getMapZoom() < _settings.disableBelowZoom) || preventProcess())
             return;
         doSpinner('processSegs', true);
-        const eg = getOLMapExtent().toGeometry(),
+        const getSegmentId = (segObj) => (typeof segObj.getID === 'function') ? segObj.getID() : segObj.id,
+            getSegmentUpdatedOn = (segObj) => (typeof segObj.getUpdatedOn === 'function') ? segObj.getUpdatedOn() : (segObj.modificationData?.updatedOn ?? 0),
             findObjIndex = (array, fldName, value) => array.map((a) => a[fldName]).indexOf(value),
             processError = (err, chunk) => {
                 logDebug(`Retry: ${retry}`);
                 if (retry < 5)
                     processSegs(action, chunk, true, ++retry);
-                else
-                    logError(`Get HNs for ${chunk.length} segments failed. Code: ${err.status} - Text: ${err.responseText}`);
+                else {
+                    // Handle both HTTP errors (err.status/err.responseText) and SDK/Promise rejections (err.message)
+                    const errMsg = err.status 
+                        ? `Code: ${err.status} - Text: ${err.responseText}`
+                        : (err.message ? `${err.message}` : String(err));
+                    logError(`Get HNs for ${chunk.length} segments failed. ${errMsg}`);
+                }
             },
             processJSON = (jsonData) => {
-                if ((jsonData?.error === undefined) && (typeof jsonData?.segmentHouseNumbers?.objects !== 'undefined'))
+                // Legacy W.controller.descartesClient returns { segmentHouseNumbers: { objects: [...] } }
+                // SDK returns HouseNumber[] directly
+                if (jsonData?.segmentHouseNumbers?.objects && jsonData.segmentHouseNumbers.objects.length > 0)
                     drawHNs(jsonData.segmentHouseNumbers.objects);
+                else if (Array.isArray(jsonData) && jsonData.length > 0)
+                    drawHNs(jsonData);
             },
-            mapHouseNumbers = (segObj) => segObj.getID(),
+            mapHouseNumbers = (segObj) => getSegmentId(segObj),
             invokeProcessError = function (err) { return processError(err, this); };
         if ((action === 'objectsremoved')) {
             if (arrSegObjs?.length > 0) {
-                const removedSegIds = [];
-                let hnNavPointsToRemove = [],
-                    hnNavPointsNumbersToRemove = [];
+                const [west, south, east, north] = getMapExtentBbox();
+                const extentPoly = turf.bboxPolygon([west, south, east, north]);
+                let needsRedraw = false;
                 arrSegObjs.forEach((segObj) => {
-                    const segmentId = segObj.getID();
-                    if (!eg.intersects(segObj.getAttribute('geometry')) && (segmentId > 0)) {
-                        hnNavPointsToRemove = hnNavPointsToRemove.concat(_HNNavPointsLayer.getFeaturesByAttribute('segmentId', segmentId));
-                        if (!_settings.enableTooltip)
-                            hnNavPointsNumbersToRemove = hnNavPointsNumbersToRemove.concat(_HNNavPointsNumbersLayer.getFeaturesByAttribute('segmentId', segmentId));
-                        else
-                            removedSegIds.push(segmentId);
-                        const segIdx = findObjIndex(_processedSegments, 'segId', segmentId);
-                        if (segIdx > -1)
-                            _processedSegments.splice(segIdx, 1);
+                    const segmentId = getSegmentId(segObj);
+                    if (segmentId > 0) {
+                        const segGeom = segObj.geometry;
+                        if (!segGeom || !turf.booleanIntersects(extentPoly, { type: 'Feature', geometry: segGeom })) {
+                            const featureIds = _segmentHnIds.get(segmentId);
+                            if (featureIds) {
+                                featureIds.forEach((fid) => {
+                                    _allLineFeatures.delete(fid);
+                                    _allNumberFeatures.delete(fid);
+                                    _numberFeatureMeta.delete(`n-${fid}`);
+                                });
+                                _segmentHnIds.delete(segmentId);
+                                needsRedraw = true;
+                            }
+                            const segIdx = findObjIndex(_processedSegments, 'segId', segmentId);
+                            if (segIdx > -1)
+                                _processedSegments.splice(segIdx, 1);
+                        }
                     }
                 });
-                if (hnNavPointsToRemove.length > 0)
-                    _HNNavPointsLayer.removeFeatures(hnNavPointsToRemove);
-                if (hnNavPointsNumbersToRemove.length > 0)
-                    _HNNavPointsNumbersLayer.removeFeatures(hnNavPointsNumbersToRemove);
-                if (removedSegIds.length > 0) {
-                    _HNNavPointsNumbersLayer.markers.filter((marker) => removedSegIds.includes(marker.segmentId)).forEach((marker) => {
-                        _HNNavPointsNumbersLayer.removeMarker(marker);
-                    });
-                }
+                if (needsRedraw)
+                    _redrawHNLayers();
             }
         }
         else { // action = 'objectsadded', 'zoomend', 'init', 'exithousenumbers', 'hnLayerToggled', 'hnNumbersLayerToggled', 'settingChanged', 'afterSave', 'afterclearactions'
             let i = arrSegObjs.length;
             while (i--) {
-                if (arrSegObjs[i].getID() < 0) {
+                if (getSegmentId(arrSegObjs[i]) < 0) {
                     arrSegObjs.splice(i, 1);
                 }
                 else {
-                    const segIdx = findObjIndex(_processedSegments, 'segId', arrSegObjs[i].getID());
+                    const segIdx = findObjIndex(_processedSegments, 'segId', getSegmentId(arrSegObjs[i]));
                     if (segIdx > -1) {
-                        if (arrSegObjs[i].getUpdatedOn() > _processedSegments[segIdx].updatedOn)
-                            _processedSegments[segIdx].updatedOn = arrSegObjs[i].getUpdatedOn();
+                        if (getSegmentUpdatedOn(arrSegObjs[i]) > _processedSegments[segIdx].updatedOn)
+                            _processedSegments[segIdx].updatedOn = getSegmentUpdatedOn(arrSegObjs[i]);
                         else if (!processAll)
                             arrSegObjs.splice(i, 1);
                     }
                     else {
-                        _processedSegments.push({ segId: arrSegObjs[i].getID(), updatedOn: arrSegObjs[i].getUpdatedOn() });
+                        _processedSegments.push({ segId: getSegmentId(arrSegObjs[i]), updatedOn: getSegmentUpdatedOn(arrSegObjs[i]) });
                     }
                 }
             }
@@ -567,9 +631,29 @@
                 else
                     chunk = arrSegObjs.splice(0, 500);
                 try {
-                    W.controller.descartesClient.getHouseNumbers(chunk.map(mapHouseNumbers)).then(processJSON).catch(invokeProcessError.bind(chunk));
+                    if (typeof W !== 'undefined' && W.controller && W.controller.descartesClient && W.controller.descartesClient.getHouseNumbers) {
+                        W.controller.descartesClient.getHouseNumbers(chunk.map(mapHouseNumbers))
+                            .then(processJSON)
+                            .catch((err) => {
+                                logDebug('W.controller.descartesClient.getHouseNumbers promise rejected:', err);
+                                invokeProcessError.call(chunk, err);
+                            });
+                    }
+                    else if (wmeSDK?.DataModel?.HouseNumbers?.fetchHouseNumbers) {
+                        wmeSDK.DataModel.HouseNumbers.fetchHouseNumbers({ segmentIds: chunk.map(mapHouseNumbers) })
+                            .then(processJSON)
+                            .catch((err) => {
+                                logDebug('fetchHouseNumbers promise rejected:', err);
+                                invokeProcessError.call(chunk, err);
+                            });
+                    }
+                    else {
+                        logError('Neither W.controller.descartesClient nor SDK HouseNumbers API available');
+                        processError(new Error('No HouseNumbers API available'), chunk);
+                    }
                 }
                 catch (error) {
+                    logDebug('HouseNumbers API call error:', error);
                     processError(error, [...chunk]);
                 }
             }
@@ -584,7 +668,7 @@
             destroyAllHNs();
             return true;
         }
-        if (W.map.getOLMap().getZoom() < _settings.disableBelowZoom) {
+        if (getMapZoom() < _settings.disableBelowZoom) {
             destroyAllHNs();
             return true;
         }
@@ -594,16 +678,26 @@
     function segmentsEvent(evt) {
         if (!evt || preventProcess())
             return;
-        if ((this.action === 'objectssynced') || (this.action === 'objectsremoved'))
+        if ((this.action === 'objectssynced') || (this.action === 'objectsremoved')) {
             processSegmentsToRemove();
+            return;
+        }
         if (this.action === 'objectschanged-id') {
             const oldSegmentId = evt.oldID,
                 newSegmentID = evt.newID;
-            _HNNavPointsLayer.getFeaturesByAttribute('segmentId', oldSegmentId).forEach((feature) => { feature.attributes.segmentId = newSegmentID; });
-            if (_settings.enableTooltip)
-                _HNNavPointsNumbersLayer.markers.filter((marker) => marker.segmentId === oldSegmentId).forEach((marker) => { marker.segmentId = newSegmentID; });
-            else
-                _HNNavPointsNumbersLayer.getFeaturesByAttribute('segmentId', oldSegmentId).forEach((feature) => { feature.attributes.segmentId = newSegmentID; });
+            const hnIds = _segmentHnIds.get(oldSegmentId);
+            if (hnIds) {
+                _segmentHnIds.set(newSegmentID, hnIds);
+                _segmentHnIds.delete(oldSegmentId);
+                hnIds.forEach((fid) => {
+                    const lineFeats = _allLineFeatures.get(fid);
+                    if (lineFeats) lineFeats.forEach((f) => { f.properties.segmentId = newSegmentID; });
+                    const numFeat = _allNumberFeatures.get(fid);
+                    if (numFeat) numFeat.properties.segmentId = newSegmentID;
+                    const meta = _numberFeatureMeta.get(`n-${fid}`);
+                    if (meta) meta.segmentId = newSegmentID;
+                });
+            }
         }
         else if (this.action === 'objects-state-deleted') {
             evt.forEach((obj) => {
@@ -612,7 +706,7 @@
             });
         }
         else {
-            processSegs(this.action, evt.filter((o) => o.getAttribute('hasHNs')));
+            processSegs(this.action, evt.filter((o) => o && (typeof o.getAttribute === 'function' ? o.getAttribute('hasHNs') : o.hasHouseNumbers)));
         }
     }
 
@@ -621,169 +715,243 @@
             return;
         const oldFeatureId = evt.oldID,
             newFeatureId = evt.newID;
-        _HNNavPointsLayer.getFeaturesByAttribute('featureId', oldFeatureId).forEach((feature) => { feature.attributes.featureId = newFeatureId; });
-        if (_settings.enableTooltip)
-            _HNNavPointsNumbersLayer.markers.filter((marker) => marker.featureId === oldFeatureId).forEach((marker) => { marker.featureId = newFeatureId; });
-        else
-            _HNNavPointsNumbersLayer.getFeaturesByAttribute('featureId', oldFeatureId).forEach((feature) => { feature.attributes.featureId = newFeatureId; });
+        if (_allLineFeatures.has(oldFeatureId)) {
+            const lineFeats = _allLineFeatures.get(oldFeatureId);
+            lineFeats.forEach((f) => {
+                f.properties.featureId = newFeatureId;
+                if (f.id === `ls-${oldFeatureId}`) f.id = `ls-${newFeatureId}`;
+                else if (f.id === `l-${oldFeatureId}`) f.id = `l-${newFeatureId}`;
+            });
+            _allLineFeatures.set(newFeatureId, lineFeats);
+            _allLineFeatures.delete(oldFeatureId);
+        }
+        if (_allNumberFeatures.has(oldFeatureId)) {
+            const numFeat = _allNumberFeatures.get(oldFeatureId);
+            numFeat.properties.featureId = newFeatureId;
+            numFeat.id = `n-${newFeatureId}`;
+            _allNumberFeatures.set(newFeatureId, numFeat);
+            _allNumberFeatures.delete(oldFeatureId);
+            const meta = _numberFeatureMeta.get(`n-${oldFeatureId}`);
+            if (meta) {
+                _numberFeatureMeta.set(`n-${newFeatureId}`, meta);
+                _numberFeatureMeta.delete(`n-${oldFeatureId}`);
+            }
+        }
+        _segmentHnIds.forEach((hnIds) => {
+            if (hnIds.has(oldFeatureId)) {
+                hnIds.delete(oldFeatureId);
+                hnIds.add(newFeatureId);
+            }
+        });
     }
 
     function objectsChangedHNs(evt) {
         if (!evt || preventProcess())
             return;
-        if ((evt.length === 1) && evt[0].getSegmentId() && !_segmentsToProcess.includes(evt[0].getSegmentId()))
-            _segmentsToProcess.push(evt[0].getSegmentId());
+        const getHNSegmentId = (hn) => (typeof hn.getSegmentId === 'function') ? hn.getSegmentId() : hn.segmentId;
+        if ((evt.length === 1) && getHNSegmentId(evt[0]) && !_segmentsToProcess.includes(getHNSegmentId(evt[0])))
+            _segmentsToProcess.push(getHNSegmentId(evt[0]));
     }
 
     function objectsStateDeletedHNs(evt) {
         if (!evt || preventProcess())
             return;
-        if ((evt.length === 1) && evt[0].getSegmentId() && !_segmentsToProcess.includes(evt[0].getSegmentId()))
-            _segmentsToProcess.push(evt[0].getSegmentId());
+        const getHNSegmentId = (hn) => (typeof hn.getSegmentId === 'function') ? hn.getSegmentId() : hn.segmentId;
+        if ((evt.length === 1) && getHNSegmentId(evt[0]) && !_segmentsToProcess.includes(getHNSegmentId(evt[0])))
+            _segmentsToProcess.push(getHNSegmentId(evt[0]));
         removeHNs(evt);
-    }
-
-    function objectsAddedHNs(evt) {
-        if (!evt || preventProcess())
-            return;
-        if ((evt.length === 1) && evt[0].getSegmentId() && !_segmentsToProcess.includes(evt[0].getSegmentId()))
-            _segmentsToProcess.push(evt[0].getSegmentId());
     }
 
     function zoomEndEvent() {
         if (preventProcess())
             return;
-        if ((W.map.getOLMap().getZoom() < _settings.disableBelowZoom))
+        if ((getMapZoom() < _settings.disableBelowZoom))
             destroyAllHNs();
-        if ((W.map.getOLMap().getZoom() > (_settings.disableBelowZoom - 1)) && (_processedSegments.length === 0))
-            processSegs('zoomend', W.model.segments.getObjectArray().filter((o) => o.getAttribute('hasHNs')), true);
+        if ((getMapZoom() > (_settings.disableBelowZoom - 1)) && (_processedSegments.length === 0)) {
+            const allSegments = wmeSDK ? wmeSDK.DataModel.Segments.getAll() : [];
+            processSegs('zoomend', allSegments.filter((o) => o && (typeof o.getAttribute === 'function' ? o.getAttribute('hasHNs') : o.hasHouseNumbers)), true);
+        }
     }
 
-    function afterActionsEvent(evt) {
-        if (!evt || preventProcess())
-            return;
-        if ((evt.type === 'afterclearactions') || (evt.type === 'noActions')) {
-            processSegmentsToRemove(true, [..._segmentsToProcess]);
-            processSegs('afterclearactions', W.model.segments.getByIds([..._segmentsToProcess]), true);
-        }
-        else if (evt.action?._description?.includes('Deleted house number')) {
-            if (evt.type === 'afterundoaction')
-                drawHNs([evt.action.object]);
-            else
-                removeHNs([evt.action.object]);
-        }
-        else if (evt.action?._description?.includes('Updated house number')) {
-            const tempEvt = _.cloneDeep(evt);
-            if (evt.type === 'afterundoaction') {
-                if (tempEvt.action.newAttributes?.number)
-                    tempEvt.action.attributes.number = tempEvt.action.newAttributes.number;
+    function _getHNFromModel(houseNumberId) {
+        if (typeof W === 'undefined' || !W.model?.segmentHouseNumbers) return null;
+        return W.model.segmentHouseNumbers.getObjectById(houseNumberId)
+            ?? W.model.segmentHouseNumbers.getObjectById(parseInt(houseNumberId, 10))
+            ?? null;
+    }
+
+    function _hnDrawEvent(ev) {
+        if (preventProcess()) return;
+        const hn = _getHNFromModel(ev.houseNumberId);
+        if (hn) drawHNs([hn]);
+    }
+
+    function _hnDeleteEvent(ev) {
+        if (preventProcess()) return;
+        // houseNumberId IS the featureId; try both string and numeric key forms
+        const idStr = ev.houseNumberId;
+        const idNum = parseInt(idStr, 10);
+        const featureId = _allLineFeatures.has(idStr) ? idStr
+            : (_allLineFeatures.has(idNum) ? idNum : null);
+        if (featureId === null) return;
+        const meta = _numberFeatureMeta.get(`n-${featureId}`);
+        removeHNs([{ getID: () => featureId, id: featureId, getSegmentId: () => meta?.segmentId ?? null, segmentId: meta?.segmentId ?? null }]);
+    }
+
+    function _noEditsEvent() {
+        if (preventProcess()) return;
+        processSegmentsToRemove(true, [..._segmentsToProcess]);
+        const segsToProcess = wmeSDK
+            ? _segmentsToProcess.map(id => wmeSDK.DataModel.Segments.getById({ segmentId: id })).filter(Boolean)
+            : [];
+        processSegs('afterclearactions', segsToProcess, true);
+        _segmentsToProcess = [];
+    }
+
+    function _afterUndoEvent() {
+        if (preventProcess() || _allLineFeatures.size === 0) return;
+        // Reconcile tracked HN features against the W model. Any feature whose
+        // HN no longer exists (e.g. after undoing an add) is removed from tracking.
+        let hasStale = false;
+        _allLineFeatures.forEach((_, featureId) => {
+            if (!_getHNFromModel(featureId)) {
+                _allLineFeatures.delete(featureId);
+                _allNumberFeatures.delete(featureId);
+                _numberFeatureMeta.delete(`n-${featureId}`);
+                _segmentHnIds.forEach((idSet, segId) => {
+                    if (idSet.has(featureId)) {
+                        idSet.delete(featureId);
+                        if (idSet.size === 0) _segmentHnIds.delete(segId);
+                    }
+                });
+                hasStale = true;
             }
-            else if (evt.type === 'afteraction') {
-                if (tempEvt.action.oldAttributes?.number)
-                    tempEvt.action.attributes.number = tempEvt.action.oldAttributes.number;
-            }
-            removeHNs([tempEvt.action.object]);
-            drawHNs([evt.action.object]);
-        }
-        else if (evt.action?._description?.includes('Added house number')) {
-            if (evt.type === 'afterundoaction')
-                removeHNs([evt.action.houseNumber]);
-            else
-                drawHNs([evt.action.houseNumber]);
-        }
-        else if (evt.action?._description?.includes('Moved house number')) {
-            drawHNs([evt.action.newHouseNumber]);
-        }
-        else if (evt.action?.houseNumber) {
-            drawHNs((evt.action.newHouseNumber ? [evt.action.newHouseNumber] : [evt.action.houseNumber]));
-        }
+        });
+        if (hasStale) _redrawHNLayers();
     }
 
     async function reloadClicked() {
         if (preventProcess() || document.querySelector('wz-button.overlay-button.reload-button').classList.contains('disabled'))
             return;
         await destroyAllHNs();
-        processSegs('reload', W.model.segments.getObjectArray().filter((o) => o.getAttribute('hasHNs')));
+        const allSegments = wmeSDK ? wmeSDK.DataModel.Segments.getAll() : [];
+        processSegs('reload', allSegments.filter((o) => o && (typeof o.getAttribute === 'function' ? o.getAttribute('hasHNs') : o.hasHouseNumbers)));
     }
 
     function initBackgroundTasks(status) {
         if (status === 'enable') {
             _saveButtonObserver = new MutationObserver((mutationsList) => {
-                if ((W.model.actionManager._redoStack.length === 0)
+                const redoStackEmpty = typeof W !== 'undefined' && W.model && W.model.actionManager ? (W.model.actionManager._redoStack.length === 0) : true;
+                if ((redoStackEmpty)
                     && mutationsList.some((mutation) => ((mutation.attributeName === 'disabled')
                             && (mutation.oldValue === 'true')
                             && (mutation.target.disabled === true)))
                 ) {
-                    if (W.editingMediator.get('editingHouseNumbers'))
-                        processSegs('afterSave', W.model.segments.getByIds([..._segmentsToProcess]), true);
-                    else
-                        processSegmentsToRemove();
+                    processSegmentsToRemove();
                 }
             });
             _saveButtonObserver.observe(document.getElementById('save-button'), {
                 childList: false, attributes: true, attributeOldValue: true, characterData: false, characterDataOldValue: false, subtree: false
             });
             _saveButtonObserver.observing = true;
-            W.accelerators.events.on({ reloadData: destroyAllHNs });
-            document.querySelector('wz-button.overlay-button.reload-button').addEventListener('click', reloadClicked);
-            W.model.segments.on('objectsadded', segmentsEvent, { action: 'objectsadded' });
-            W.model.segments.on('objectsremoved', segmentsEvent, { action: 'objectsremoved' });
-            W.model.segments.on('objectssynced', segmentsEvent, { action: 'objectssynced' });
-            W.model.segments.on('objects-state-deleted', segmentsEvent, { action: 'objects-state-deleted' });
-            W.model.segments.on('objectschanged-id', segmentsEvent, { action: 'objectschanged-id' });
-            W.model.segmentHouseNumbers.on({
-                objectsadded: objectsAddedHNs,
-                objectschanged: objectsChangedHNs,
-                'objectschanged-id': objectsChangedIdHNs,
-                'objects-state-deleted': objectsStateDeletedHNs
-            });
-            W.editingMediator.on({ 'change:editingHouseNumbers': observeHNLayer });
-            W.map.events.on({
-                zoomend: zoomEndEvent, addlayer: checkLayerIndex, removelayer: checkLayerIndex
-            });
-            WazeWrap.Events.register('afterundoaction', this, afterActionsEvent);
-            WazeWrap.Events.register('afteraction', this, afterActionsEvent);
-            WazeWrap.Events.register('afterclearactions', this, afterActionsEvent);
+            document.querySelector('wz-button.overlay-button.reload-button')?.addEventListener('click', reloadClicked);
+            
+            // Register SDK data model event listeners for segments (SDK mandatory)
+            if (wmeSDK && wmeSDK.Events) {
+                wmeSDK.Events.trackDataModelEvents({ dataModelName: 'segments' });
+                eventHandlers.segmentsAdded = (ev) => {
+                    if (ev.dataModelName !== 'segments') return;
+                    const segs = ev.objectIds.map(id => wmeSDK.DataModel.Segments.getById({ segmentId: id })).filter(Boolean);
+                    segmentsEvent.call({ action: 'objectsadded' }, segs);
+                };
+                eventHandlers.segmentsRemoved = (ev) => {
+                    if (ev.dataModelName !== 'segments') return;
+                    segmentsEvent.call({ action: 'objectsremoved' }, ev.objectIds.map(id => ({ getID: () => id, geometry: null })));
+                };
+                eventHandlers.segmentsSynced = (ev) => {
+                    if (ev.dataModelName !== 'segments') return;
+                    segmentsEvent.call({ action: 'objectssynced' }, []);
+                };
+                eventHandlers.segmentsStateDeleted = (ev) => {
+                    if (ev.dataModelName !== 'segments') return;
+                    segmentsEvent.call({ action: 'objects-state-deleted' }, ev.objectIds.map(id => ({ getID: () => id })));
+                };
+                eventHandlers.segmentsChangedId = (ev) => {
+                    if (ev.dataModelName !== 'segments') return;
+                    segmentsEvent.call({ action: 'objectschanged-id' }, ev.objectIds);
+                };
+                wmeSDK.Events.on({ eventName: 'wme-data-model-objects-added', eventHandler: eventHandlers.segmentsAdded });
+                wmeSDK.Events.on({ eventName: 'wme-data-model-objects-removed', eventHandler: eventHandlers.segmentsRemoved });
+                wmeSDK.Events.on({ eventName: 'wme-data-model-objects-saved', eventHandler: eventHandlers.segmentsSynced });
+                wmeSDK.Events.on({ eventName: 'wme-data-model-object-state-deleted', eventHandler: eventHandlers.segmentsStateDeleted });
+                wmeSDK.Events.on({ eventName: 'wme-data-model-object-changed-id', eventHandler: eventHandlers.segmentsChangedId });
+                // Layer click for tooltip
+                eventHandlers.layerFeatureClicked = (clickEvt) => {
+                    const meta = _numberFeatureMeta.get(String(clickEvt.featureId));
+                    if (meta)
+                        showTooltip({ object: { featureId: clickEvt.featureId, ...meta } });
+                };
+                wmeSDK.Events.on({ eventName: 'wme-layer-feature-clicked', eventHandler: eventHandlers.layerFeatureClicked });
+            }
+            // Register SDK map events (SDK mandatory for zoom/layer events)
+            if (wmeSDK && wmeSDK.Events) {
+                wmeSDK.Events.on({ eventName: 'wme-map-zoom-changed', eventHandler: zoomEndEvent });
+                // HN mutation events (replace legacy afterActionsEvent)
+                wmeSDK.Events.on({ eventName: 'wme-house-number-added', eventHandler: _hnDrawEvent });
+                wmeSDK.Events.on({ eventName: 'wme-house-number-updated', eventHandler: _hnDrawEvent });
+                wmeSDK.Events.on({ eventName: 'wme-house-number-moved', eventHandler: _hnDrawEvent });
+                wmeSDK.Events.on({ eventName: 'wme-house-number-deleted', eventHandler: _hnDeleteEvent });
+                wmeSDK.Events.on({ eventName: 'wme-no-edits', eventHandler: _noEditsEvent });
+                wmeSDK.Events.on({ eventName: 'wme-after-undo', eventHandler: _afterUndoEvent });
+            }
             _scriptActive = true;
         }
         else if (status === 'disable') {
             _saveButtonObserver = undefined;
-            W.accelerators.events.on('reloadData', null, destroyAllHNs);
-            document.querySelector('wz-button.overlay-button.reload-button').removeEventListener('click', reloadClicked);
-            W.model.segments.off('objectsadded', segmentsEvent, { action: 'objectsadded' });
-            W.model.segments.off('objectsremoved', segmentsEvent, { action: 'objectsremoved' });
-            W.model.segments.off('objectschanged', segmentsEvent, { action: 'objectschanged' });
-            W.model.segments.off('objects-state-deleted', segmentsEvent, { action: 'objects-state-deleted' });
-            W.model.segments.off('objectschanged-id', segmentsEvent, { action: 'objectschanged-id' });
-            W.model.segmentHouseNumbers.off({
-                objectsadded: objectsAddedHNs,
-                objectschanged: objectsChangedHNs,
-                'objectschanged-id': objectsChangedIdHNs,
-                'objects-state-deleted': objectsStateDeletedHNs,
-                objectsremoved: removeHNs
-            });
-            W.editingMediator.off({ 'change:editingHouseNumbers': observeHNLayer });
-            W.map.events.unregister('zoomend', null, zoomEndEvent);
-            W.map.events.unregister('addlayer', null, checkLayerIndex);
-            W.map.events.unregister('removelayer', null, checkLayerIndex);
-            WazeWrap.Events.unregister('afterundoaction', this, afterActionsEvent);
-            WazeWrap.Events.unregister('afteraction', this, afterActionsEvent);
+            document.querySelector('wz-button.overlay-button.reload-button')?.removeEventListener('click', reloadClicked);
+            
+            // Remove SDK event listeners (SDK mandatory)
+            if (wmeSDK && wmeSDK.Events) {
+                wmeSDK.Events.stopDataModelEventsTracking({ dataModelName: 'segments' });
+                wmeSDK.Events.off({ eventName: 'wme-data-model-objects-added', eventHandler: eventHandlers.segmentsAdded });
+                wmeSDK.Events.off({ eventName: 'wme-data-model-objects-removed', eventHandler: eventHandlers.segmentsRemoved });
+                wmeSDK.Events.off({ eventName: 'wme-data-model-objects-saved', eventHandler: eventHandlers.segmentsSynced });
+                wmeSDK.Events.off({ eventName: 'wme-data-model-object-state-deleted', eventHandler: eventHandlers.segmentsStateDeleted });
+                wmeSDK.Events.off({ eventName: 'wme-data-model-object-changed-id', eventHandler: eventHandlers.segmentsChangedId });
+                wmeSDK.Events.off({ eventName: 'wme-map-zoom-changed', eventHandler: zoomEndEvent });
+                wmeSDK.Events.off({ eventName: 'wme-layer-feature-clicked', eventHandler: eventHandlers.layerFeatureClicked });
+                wmeSDK.Events.off({ eventName: 'wme-house-number-added', eventHandler: _hnDrawEvent });
+                wmeSDK.Events.off({ eventName: 'wme-house-number-updated', eventHandler: _hnDrawEvent });
+                wmeSDK.Events.off({ eventName: 'wme-house-number-moved', eventHandler: _hnDrawEvent });
+                wmeSDK.Events.off({ eventName: 'wme-house-number-deleted', eventHandler: _hnDeleteEvent });
+                wmeSDK.Events.off({ eventName: 'wme-no-edits', eventHandler: _noEditsEvent });
+                wmeSDK.Events.off({ eventName: 'wme-after-undo', eventHandler: _afterUndoEvent });
+            }
             _scriptActive = false;
         }
         return Promise.resolve();
     }
 
     function enterHNEditMode(segment, moveMap) {
-        if (segment) {
-            if (moveMap)
-                W.map.setCenter({ lon: segment.getCenter().x, lat: segment.getCenter().y }, W.map.getOLMap().getZoom());
-            W.selectionManager.setSelectedModels(segment);
-            document.querySelector('#segment-edit-general .edit-house-numbers').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        if (segment && wmeSDK) {
+            if (moveMap) {
+                const coords = segment.geometry?.coordinates;
+                if (coords?.length > 0)
+                    wmeSDK.Map.setMapCenter({ lonLat: { lon: coords[0][0], lat: coords[0][1] } });
+            }
+            try {
+                const segId = typeof segment.getID === 'function' ? segment.getID() : segment.id;
+                wmeSDK.Editing.setSelection({ selection: { ids: [segId], objectType: 'segment' } });
+            }
+            catch (err) {
+                logDebug('SDK Editing.setSelection failed', err);
+            }
+            document.querySelector('#segment-edit-general .edit-house-numbers')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
         }
     }
 
     function showTooltip(evt) {
-        if ((W.map.getOLMap().getZoom() < 16) || W.editingMediator.get('editingHouseNumbers') || !_settings.enableTooltip)
+        if ((getMapZoom() < 16) || !_settings.enableTooltip)
             return;
         if (evt?.object?.featureId) {
             checkTooltip();
@@ -791,9 +959,10 @@
             const { segmentId, hnNumber } = evt.object;
             if (_popup.inUse && (_popup.hnNumber === hnNumber) && (_popup.segmentId === segmentId))
                 return;
-            const segment = W.model.segments.getObjectById(segmentId),
-                street = W.model.streets.getObjectById(segment.getPrimaryStreetID()),
-                popupPixel = W.map.getPixelFromLonLat(evt.object.lonlat),
+            const segment = wmeSDK ? wmeSDK.DataModel.Segments.getById({ segmentId }) : null,
+                street = wmeSDK && segment ? wmeSDK.DataModel.Streets.getById({ streetId: segment.getPrimaryStreetID() }) : null,
+                rawPixel = wmeSDK ? wmeSDK.Map.getMapPixelFromLonLat({ lonLat: { lon: evt.object.lon, lat: evt.object.lat } }) : { x: 0, y: 0 },
+                popupPixel = { x: rawPixel.x, y: rawPixel.y },
                 divElemRoot = createElem('div', {
                     id: 'hnNavPointsTooltipDiv-tooltip',
                     class: 'tippy-box',
@@ -809,7 +978,7 @@
                 divElemRootDivDiv = createElem('div', { class: 'house-number-marker-tooltip' });
             divElemRootDivDiv.appendChild(createElem('div', { class: 'title', dir: 'auto', textContent: `${hnNumber} ${(street ? street.getName() : '')}` }));
             divElemRootDivDiv.appendChild(createElem('div', {
-                id: 'hnNavPointsTooltipDiv-edit', class: 'edit-button fa fa-pencil', style: segment.canEditHouseNumbers() ? '' : 'display:none;'
+                id: 'hnNavPointsTooltipDiv-edit', class: 'edit-button fa fa-pencil', style: segment && segment.canEditHouseNumbers ? '' : 'display:none;'
             }, [{ click: invokeEnterHNEditMode }]));
             const divElemRootDiv = createElem('div', {
                 id: 'hnNavPointsTooltipDiv-content', class: 'tippy-content', 'data-state': 'hidden', style: 'transition-duration: 300ms;'
@@ -827,7 +996,7 @@
             popupPixel.x = ((popupPixel.x - popupWidthHalf + 5) > 0) ? (popupPixel.x - popupWidthHalf + 5) : 10;
             if (popupPixel.x === 10)
                 arrowOffset = popupPixel.origX - 22;
-            if ((popupPixel.x + (popupWidthHalf * 2)) > W.map.getEl()[0].clientWidth) {
+            if ((popupPixel.x + (popupWidthHalf * 2)) > (wmeSDK ? wmeSDK.Map.getMapViewportElement().clientWidth : 800)) {
                 popupPixel.x = (popupPixel.origX - _hnNavPointsTooltipDiv.clientWidth + 8);
                 arrowOffset = (_hnNavPointsTooltipDiv.clientWidth - 30);
                 moveMap = true;
@@ -866,34 +1035,13 @@
             return;
         checkTimeout({ timeout: 'hideTooltip' });
         const parentsArr = evt.toElement?.offsetParent ? [evt.toElement.offsetParent, evt.toElement.offsetParent.offSetParent] : [];
-        if (evt.toElement && (parentsArr.includes(_HNNavPointsNumbersLayer?.div) || parentsArr.includes(_hnNavPointsTooltipDiv)))
+        if (evt.toElement && parentsArr.includes(_hnNavPointsTooltipDiv))
             return;
         _timeouts.hideTooltip = window.setTimeout(hideTooltip, 100, evt);
     }
 
     function checkTooltip() {
         checkTimeout({ timeout: 'hideTooltip' });
-    }
-
-    function checkLayerIndex() {
-        const layerIdx = W.map.layers.map((a) => a.uniqueName).indexOf('__HNNavPointsNumbersLayer');
-        let properIdx;
-        if (_settings.keepHNLayerOnTop) {
-            const layersIndexes = [],
-                layersLoaded = W.map.layers.map((a) => a.uniqueName);
-            ['wmeGISLayersDefault', '__HNNavPointsLayer'].forEach((layerUniqueName) => {
-                if (layersLoaded.indexOf(layerUniqueName) > 0)
-                    layersIndexes.push(layersLoaded.indexOf(layerUniqueName));
-            });
-            properIdx = (Math.max(...layersIndexes) + 1);
-        }
-        else {
-            properIdx = (W.map.layers.map((a) => a.uniqueName).indexOf('__HNNavPointsLayer') + 1);
-        }
-        if (layerIdx !== properIdx) {
-            W.map.layers.splice(properIdx, 0, W.map.layers.splice(layerIdx, 1)[0]);
-            W.map.getOLMap().resetLayersZIndex();
-        }
     }
 
     function checkHnNavpointsVersion() {
@@ -912,52 +1060,15 @@
     async function onWazeWrapReady() {
         log('Initializing.');
         checkHnNavpointsVersion();
-        const navPointsNumbersLayersOptions = {
-                displayInLayerSwitcher: true,
-                uniqueName: '__HNNavPointsNumbersLayer',
-                selectable: true,
-                labelSelect: true,
-                rendererOptions: { zIndexing: true },
-                styleMap: new OpenLayers.StyleMap({
-                    default: new OpenLayers.Style({
-                        strokeColor: '${Color}',
-                        strokeOpacity: 1,
-                        strokeWidth: 3,
-                        fillColor: '${Color}',
-                        fillOpacity: 0.5,
-                        pointerEvents: 'visiblePainted',
-                        label: '${hNumber}',
-                        fontSize: '12px',
-                        fontFamily: 'Rubik, Boing-light, sans-serif;',
-                        fontWeight: 'bold',
-                        direction: '${textDir}',
-                        labelOutlineColor: '${Color}',
-                        labelOutlineWidth: 3,
-                        labelSelect: true
-                    })
-                })
-            },
-            handleCheckboxToggle = function () {
+        const handleCheckboxToggle = function () {
                 const settingName = this.id.substring(14);
-                if (settingName === 'enableTooltip') {
-                    if (!this.checked)
-                        _HNNavPointsNumbersLayer.clearMarkers();
-                    else
-                        _HNNavPointsNumbersLayer.destroyFeatures();
-                    W.map.removeLayer(_HNNavPointsNumbersLayer);
-                    if (this.checked)
-                        _HNNavPointsNumbersLayer = new OpenLayers.Layer.Markers('HN NavPoints Numbers Layer', navPointsNumbersLayersOptions);
-                    else
-                        _HNNavPointsNumbersLayer = new OpenLayers.Layer.Vector('HN NavPoints Numbers Layer', navPointsNumbersLayersOptions);
-                    W.map.addLayer(_HNNavPointsNumbersLayer);
-                    _HNNavPointsNumbersLayer.setVisibility(_settings.hnNumbers);
-                }
+                // enableTooltip no longer requires layer swap — SDK layer handles both modes
                 _settings[settingName] = this.checked;
-                if (settingName === 'keepHNLayerOnTop')
-                    checkLayerIndex();
                 saveSettingsToStorage();
-                if ((settingName === 'enableTooltip') && (W.map.getOLMap().getZoom() > (_settings.disableBelowZoom - 1)) && (_settings.hnLines || _settings.hnNumbers))
-                    processSegs('settingChanged', W.model.segments.getObjectArray().filter((o) => o.getAttribute('hasHNs')), true, 0);
+                if ((settingName === 'enableTooltip') && (getMapZoom() > (_settings.disableBelowZoom - 1)) && (_settings.hnLines || _settings.hnNumbers)) {
+                    const allSegments = wmeSDK ? wmeSDK.DataModel.Segments.getAll() : [];
+                    processSegs('settingChanged', allSegments.filter((o) => o && (typeof o.getAttribute === 'function' ? o.getAttribute('hasHNs') : o.hasHouseNumbers)), true, 0);
+                }
             },
             handleTextboxChange = function () {
                 const newVal = Math.min(22, Math.max(16, +this.value));
@@ -966,10 +1077,12 @@
                         this.value = newVal;
                     _settings.disableBelowZoom = newVal;
                     saveSettingsToStorage();
-                    if ((W.map.getOLMap().getZoom() < newVal) && (_settings.hnLines || _settings.hnNumbers))
+                    if ((getMapZoom() < newVal) && (_settings.hnLines || _settings.hnNumbers))
                         processSegs('settingChanged', null, true, 0);
-                    else if (_settings.hnLines || _settings.hnNumbers)
-                        processSegs('settingChanged', W.model.segments.getObjectArray().filter((o) => o.getAttribute('hasHNs')), true, 0);
+                    else if (_settings.hnLines || _settings.hnNumbers) {
+                        const allSegments = wmeSDK ? wmeSDK.DataModel.Segments.getAll() : [];
+                        processSegs('settingChanged', allSegments.filter((o) => o && (typeof o.getAttribute === 'function' ? o.getAttribute('hasHNs') : o.hasHouseNumbers)), true, 0);
+                    }
                 }
             },
             buildCheckbox = (id = '', textContent = '', checked = true, title = '', disabled = false) => createElem('wz-checkbox', {
@@ -977,43 +1090,84 @@
             }, [{ change: handleCheckboxToggle }]),
             buildTextBox = (id = '', label = '', value = '', placeholder = '', maxlength = 0, autocomplete = 'off', title = '', disabled = false) => createElem('wz-text-input', {
                 id, label, value, placeholder, maxlength, autocomplete, title, disabled
-            }, [{ change: handleTextboxChange }]),
-            toggleHNNavPoints = () => document.getElementById('layer-switcher-item_hn_navpoints').dispatchEvent(new MouseEvent('click', { bubbles: true })),
-            toggleHNNavPointsNumbers = () => document.getElementById('layer-switcher-item_hn_navpoints_numbers').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+            }, [{ change: handleTextboxChange }]);
         await loadSettingsFromStorage();
-        WazeWrap.Interface.AddLayerCheckbox('display', 'HN NavPoints', _settings.hnLines, hnLayerToggled);
-        WazeWrap.Interface.AddLayerCheckbox('display', 'HN NavPoints Numbers', _settings.hnNumbers, hnNumbersLayerToggled);
 
-        _HNNavPointsLayer = new OpenLayers.Layer.Vector('HN NavPoints Layer', {
-            displayInLayerSwitcher: true,
-            uniqueName: '__HNNavPointsLayer'
-        });
-        _HNNavPointsNumbersLayer = _settings.enableTooltip
-            ? new OpenLayers.Layer.Markers('HN NavPoints Numbers Layer', navPointsNumbersLayersOptions)
-            : new OpenLayers.Layer.Vector('HN NavPoints Numbers Layer', navPointsNumbersLayersOptions);
-        W.map.addLayers([_HNNavPointsLayer, _HNNavPointsNumbersLayer]);
-        _HNNavPointsLayer.setVisibility(_settings.hnLines);
-        _HNNavPointsNumbersLayer.setVisibility(_settings.hnNumbers);
+        // Create SDK layers (replace OpenLayers Layer.Vector and Layer.Markers)
+        if (wmeSDK) {
+            wmeSDK.Map.addLayer({
+                layerName: _HN_LINES_LAYER,
+                styleRules: [
+                    {
+                        predicate: (properties) => properties.featureType === 'shadow',
+                        style: { strokeWidth: 4, strokeColor: 'black', strokeOpacity: 0.5, strokeDashstyle: 'dash' }
+                    },
+                    {
+                        predicate: (properties) => properties.featureType === 'colored',
+                        style: { strokeWidth: 2, strokeColor: '${getStrokeColor}', strokeOpacity: 1, strokeDashstyle: 'dash' }
+                    }
+                ],
+                styleContext: {
+                    getStrokeColor: ({ feature }) => feature.properties.strokeColor || 'white'
+                }
+            });
+            wmeSDK.Map.addLayer({
+                layerName: _HN_NUMBERS_LAYER,
+                styleRules: [
+                    {
+                        predicate: (properties) => properties.featureType === 'hnNumber',
+                        style: {
+                            pointRadius: 0,
+                            label: '${getHNLabel}',
+                            fontSize: '14px',
+                            fontFamily: '"Open Sans", "Arial Unicode MS", sans-serif',
+                            fontWeight: 'bold',
+                            fontColor: 'black',
+                            labelOutlineColor: '${getOutlineColor}',
+                            labelOutlineWidth: 5,
+                            labelAlign: 'cm'
+                        }
+                    }
+                ],
+                styleContext: {
+                    getHNLabel: ({ feature }) => feature.properties.hnNumber || '',
+                    getOutlineColor: ({ feature }) => feature.properties.strokeColor || 'white'
+                }
+            });
+            wmeSDK.Map.setLayerVisibility({ layerName: _HN_LINES_LAYER, visibility: _settings.hnLines });
+            wmeSDK.Map.setLayerVisibility({ layerName: _HN_NUMBERS_LAYER, visibility: _settings.hnNumbers });
+            wmeSDK.LayerSwitcher.addLayerCheckbox({ name: _HN_LINES_CHECKBOX, isChecked: _settings.hnLines });
+            wmeSDK.LayerSwitcher.addLayerCheckbox({ name: _HN_NUMBERS_CHECKBOX, isChecked: _settings.hnNumbers });
+            wmeSDK.Events.on({ eventName: 'wme-layer-checkbox-toggled', eventHandler: (evt) => {
+                if (evt.name === _HN_LINES_CHECKBOX) hnLayerToggled(evt.checked);
+                else if (evt.name === _HN_NUMBERS_CHECKBOX) hnNumbersLayerToggled(evt.checked);
+            } });
+            wmeSDK.Events.trackLayerEvents({ layerName: _HN_NUMBERS_LAYER });
+        }
         window.addEventListener('beforeunload', saveSettingsToStorage, false);
-        new WazeWrap.Interface.Shortcut(
-            'toggleHNNavPointsShortcut',
-            'Toggle HN NavPoints layer',
-            'layers',
-            'layersToggleHNNavPoints',
-            _settings.toggleHNNavPointsShortcut,
-            toggleHNNavPoints,
-            null
-        ).add();
-        new WazeWrap.Interface.Shortcut(
-            'toggleHNNavPointsNumbersShortcut',
-            'Toggle HN NavPoints Numbers layer',
-            'layers',
-            'layersToggleHNNavPointsNumbers',
-            _settings.toggleHNNavPointsNumbersShortcut,
-            toggleHNNavPointsNumbers,
-            null
-        ).add();
-        const { tabLabel, tabPane } = W.userscripts.registerSidebarTab('HN-NavPoints');
+
+        // Register shortcuts with SDK
+        const toggleHNNavPointsCallback = () => hnLayerToggled(!wmeSDK.Map.isLayerVisible({ layerName: _HN_LINES_LAYER }));
+        const toggleHNNavPointsNumbersCallback = () => hnNumbersLayerToggled(!wmeSDK.Map.isLayerVisible({ layerName: _HN_NUMBERS_LAYER }));
+        
+        _registerShortcut('toggleHNNavPoints', 'Toggle HN NavPoints layer', toggleHNNavPointsCallback);
+        _registerShortcut('toggleHNNavPointsNumbers', 'Toggle HN NavPoints Numbers layer', toggleHNNavPointsNumbersCallback);
+
+        // Register sidebar tab with SDK
+        let tabLabel, tabPane;
+        try {
+            const result = await wmeSDK.Sidebar.registerScriptTab({
+                tabLabel: 'HN-NavPoints',
+                tabPane: createElem('div')
+            });
+            tabLabel = result.tabLabel;
+            tabPane = result.tabPane;
+        }
+        catch (err) {
+            logError('Failed to register sidebar tab with SDK', err);
+            return;
+        }
+        
         tabLabel.appendChild(createElem('i', { class: 'w-icon w-icon-location', style: 'font-size:15px;padding-top:4px;' }));
         tabLabel.title = _SCRIPT_SHORT_NAME;
         const docFrags = document.createDocumentFragment();
@@ -1060,21 +1214,20 @@
         docFrags.appendChild(divElemRoot);
         tabPane.appendChild(docFrags);
         tabPane.id = 'sidepanel-hn-navpoints';
-        await W.userscripts.waitForElementConnected(tabPane);
+        // SDK registerScriptTab returns Promise, so tabPane is already connected
         if (!_hnNavPointsTooltipDiv) {
             _hnNavPointsTooltipDiv = createElem('div', {
                 id: 'hnNavPointsTooltipDiv',
                 style: 'z-index:9999; visibility:visible; position:absolute; inset: auto auto 0px 0px; margin: 0px; top: 0px; left: 0px;',
                 'data-tippy-root': false
             }, [{ mouseenter: checkTooltip }, { mouseleave: hideTooltipDelay }]);
-            W.map.getEl()[0].appendChild(_hnNavPointsTooltipDiv);
+            (wmeSDK ? wmeSDK.Map.getMapViewportElement() : W.map.getEl()[0]).appendChild(_hnNavPointsTooltipDiv);
         }
         await initBackgroundTasks('enable');
-        checkLayerIndex();
         log(`Fully initialized in ${Math.round(performance.now() - _LOAD_BEGIN_TIME)} ms.`);
         showScriptInfoAlert();
         if (_scriptActive)
-            processSegs('init', W.model.segments.getObjectArray().filter((o) => o.getAttribute('hasHNs')));
+            processSegs('init', wmeSDK ? wmeSDK.DataModel.Segments.getAll().filter((o) => o && (typeof o.getAttribute === 'function' ? o.getAttribute('hasHNs') : o.hasHouseNumbers)) : []);
         setTimeout(saveSettingsToStorage, 10000);
     }
 
@@ -1106,16 +1259,25 @@
         }
     }
 
-    function bootstrap() {
-        if (!W) {
-            logDebug('W is not available. Adding event listener.');
-            document.addEventListener('wme-initialized', onWmeInitialized, { once: true });
+    // SDK Initialization
+    (unsafeWindow || window).SDK_INITIALIZED.then(() => {
+        logDebug('SDK_INITIALIZED resolved. Initializing WME SDK.');
+        try {
+            wmeSDK = getWmeSdk({ scriptId: 'wme-hn-navpoints', scriptName: _SCRIPT_LONG_NAME });
+            logDebug('WME SDK initialized');
+            onWmeReady();
         }
-        else {
+        catch (err) {
+            logError('Failed to initialize WME SDK', err);
+            logDebug('Falling back to legacy initialization...');
             onWmeInitialized();
         }
-    }
-
-    bootstrap();
+    }).catch(err => {
+        logError('SDK_INITIALIZED promise rejected, falling back to legacy init', err);
+        // Fallback for legacy WME
+        if (typeof W !== 'undefined') {
+            onWmeInitialized();
+        }
+    });
 }
 )();
