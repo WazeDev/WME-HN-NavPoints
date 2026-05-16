@@ -774,22 +774,19 @@
     // (viewport changes drastically, segment geometry differs at different zoom levels)
     sdk.Events.on({
       eventName: 'wme-map-zoom-changed',
-      eventHandler: (event) => {
-        logDebug(`Zoom changed: ${event.previousZoomLevel} → ${event.zoomLevel}`);
+      eventHandler: () => {
+        const zoomLevel = sdk.Map.getZoomLevel();
         const threshold = settings.disableBelowZoom;
-        const wasAboveThreshold = event.previousZoomLevel >= threshold;
-        const isAboveThreshold = event.zoomLevel >= threshold;
+        logDebug(`Zoom level changed to: ${zoomLevel}`);
 
-        // If crossing zoom threshold, clear cache and refresh
-        if (wasAboveThreshold !== isAboveThreshold) {
-          logDebug(`Crossing zoom threshold (${threshold}), clearing cache`);
+        // Clear cache and refresh on any zoom change (geometry/viewport can change)
+        if (zoomLevel >= threshold) {
+          logDebug(`Zoom ${zoomLevel} ≥ threshold ${threshold}, clearing cache`);
           clearCache();
           processSegmentsWithHNs();
-        } else if (isAboveThreshold) {
-          // Both above threshold: clear and refresh (geometry changes with zoom)
-          logDebug('Zoom changed within active range, clearing cache');
+        } else {
+          logDebug(`Zoom ${zoomLevel} < threshold ${threshold}, clearing cache`);
           clearCache();
-          processSegmentsWithHNs();
         }
       },
     });
