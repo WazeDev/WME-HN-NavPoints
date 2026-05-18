@@ -2,7 +2,7 @@
 // @name            WME HN NavPoints (beta)
 // @namespace       https://greasyfork.org/users/166843
 // @description     Shows navigation points of all house numbers in WME
-// @version         2026.05.18.00
+// @version         2026.05.18.01
 // @author          dBsooner
 // @grant           GM_info
 // @grant           GM_xmlhttpRequest
@@ -180,6 +180,7 @@
       markerPointRadius: 14,
       markerFontSize: 11,
       markerFillOpacity: 1.0,
+      zIndexPosition: 'above',
       toggleHNNavPointsShortcut: null,
       toggleHNNavPointsNumbersShortcut: null,
       lastSaved: 0,
@@ -215,6 +216,7 @@
       markerPointRadius: settings.markerPointRadius,
       markerFontSize: settings.markerFontSize,
       markerFillOpacity: settings.markerFillOpacity,
+      zIndexPosition: settings.zIndexPosition,
       toggleHNNavPointsShortcut: settings.toggleHNNavPointsShortcut.raw,
       toggleHNNavPointsNumbersShortcut: settings.toggleHNNavPointsNumbersShortcut.raw,
       lastSaved: settings.lastSaved,
@@ -227,6 +229,55 @@
   // =====================================================================
   // LAYER CREATION & MANAGEMENT
   // =====================================================================
+
+  /** Adjust Z-index of HN layers relative to GIS Layers. Always maintains: LINES (bottom) < LINES_colored (middle) < MARKERS (top). */
+  function setZIndex() {
+    if (settings.zIndexPosition === 'disabled') {
+      logDebug('Z-index adjustment disabled');
+      return;
+    }
+    logDebug(`Adjusting Z-index: NavPoints ${settings.zIndexPosition} GIS Layers...`);
+    try {
+      const gisZIndex = sdk.Map.getLayerZIndex({ layerName: 'GIS Layers - Default' });
+      if (settings.zIndexPosition === 'above') {
+        sdk.Map.setLayerZIndex({ layerName: LAYER_HN_LINES, zIndex: gisZIndex + 6 });
+        sdk.Map.setLayerZIndex({ layerName: `${LAYER_HN_LINES}_colored`, zIndex: gisZIndex + 7 });
+        sdk.Map.setLayerZIndex({ layerName: LAYER_HN_MARKERS, zIndex: gisZIndex + 8 });
+      } else {
+        // below: markers closest to GIS (-1), then colored (-2), then lines (-3)
+        sdk.Map.setLayerZIndex({ layerName: LAYER_HN_LINES, zIndex: gisZIndex - 3 });
+        sdk.Map.setLayerZIndex({ layerName: `${LAYER_HN_LINES}_colored`, zIndex: gisZIndex - 2 });
+        sdk.Map.setLayerZIndex({ layerName: LAYER_HN_MARKERS, zIndex: gisZIndex - 1 });
+      }
+      logDebug(`✓ Z-index adjusted: HN layers now ${settings.zIndexPosition} GIS Layers (markers always on top)`);
+    } catch (e) {
+      if (!(e instanceof sdk.Errors.InvalidStateError)) {
+        throw e;
+      }
+      logDebug('GIS Layers not yet available, watching for it...');
+      const observer = new MutationObserver(() => {
+        try {
+          const gisZIndex = sdk.Map.getLayerZIndex({ layerName: 'GIS Layers - Default' });
+          if (settings.zIndexPosition === 'above') {
+            sdk.Map.setLayerZIndex({ layerName: LAYER_HN_LINES, zIndex: gisZIndex + 6 });
+            sdk.Map.setLayerZIndex({ layerName: `${LAYER_HN_LINES}_colored`, zIndex: gisZIndex + 7 });
+            sdk.Map.setLayerZIndex({ layerName: LAYER_HN_MARKERS, zIndex: gisZIndex + 8 });
+          } else {
+            sdk.Map.setLayerZIndex({ layerName: LAYER_HN_LINES, zIndex: gisZIndex - 3 });
+            sdk.Map.setLayerZIndex({ layerName: `${LAYER_HN_LINES}_colored`, zIndex: gisZIndex - 2 });
+            sdk.Map.setLayerZIndex({ layerName: LAYER_HN_MARKERS, zIndex: gisZIndex - 1 });
+          }
+          logDebug(`✓ Z-index adjusted after GIS Layers loaded: ${settings.zIndexPosition} GIS Layers`);
+          observer.disconnect();
+        } catch (err) {
+          if (!(err instanceof sdk.Errors.InvalidStateError)) {
+            throw err;
+          }
+        }
+      });
+      observer.observe(document.querySelector('#user-tabs'), { subtree: true, childList: true });
+    }
+  }
 
   /** Create and register SDK map layers for HN lines and markers with styleRules and layer switcher. */
   async function createLayers() {
@@ -329,6 +380,9 @@
     });
 
     logDebug('✓ Layers created and registered in WME Map layers');
+
+    // Adjust Z-index to sit above GIS Layers
+    setZIndex();
   }
 
   // =====================================================================
@@ -1056,6 +1110,7 @@
       '.wme-hnp-panel .hnp-row { display: flex; justify-content: space-between; align-items: center; padding: 5px 10px; min-height: 32px; box-sizing: border-box; }',
       '.wme-hnp-panel .hnp-row-label { flex: 1; font-size: 12px; padding-right: 8px; line-height: 1.3; }',
       '.wme-hnp-panel input[type="number"] { font-size: 12px; border: 1px solid var(--hairline, #ccc); border-radius: 4px; padding: 3px 5px; width: 60px; text-align: right; box-sizing: border-box; background: var(--background_default, #fff); color: var(--content_default, #333); }',
+      '.wme-hnp-panel select { font-size: 12px; border: 1px solid var(--hairline, #ccc); border-radius: 4px; padding: 4px 6px; box-sizing: border-box; background: var(--background_default, #fff); color: var(--content_default, #333); cursor: pointer; }',
       '.wme-hnp-panel .hnp-toggle { position: relative; display: inline-block; width: 34px; height: 18px; flex-shrink: 0; }',
       '.wme-hnp-panel .hnp-toggle input { opacity: 0; width: 0; height: 0; position: absolute; }',
       '.wme-hnp-panel .hnp-toggle-slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #ccc; border-radius: 18px; transition: background-color 0.2s; }',
@@ -1152,6 +1207,24 @@
     const settingsCard = makeCard('fa-cog', 'Settings');
     const zoomInput = makeNumber('hnNP_disableZoom', settings.disableBelowZoom);
     settingsCard.body.appendChild(makeRow('Min zoom level:', zoomInput));
+
+    const zIndexSelect = document.createElement('select');
+    zIndexSelect.id = 'hnNP_zIndexPosition';
+    zIndexSelect.value = settings.zIndexPosition;
+    const optionAbove = document.createElement('option');
+    optionAbove.value = 'above';
+    optionAbove.textContent = 'Above GIS Layers';
+    const optionBelow = document.createElement('option');
+    optionBelow.value = 'below';
+    optionBelow.textContent = 'Below GIS Layers';
+    const optionDisabled = document.createElement('option');
+    optionDisabled.value = 'disabled';
+    optionDisabled.textContent = 'Disabled';
+    zIndexSelect.appendChild(optionAbove);
+    zIndexSelect.appendChild(optionBelow);
+    zIndexSelect.appendChild(optionDisabled);
+    settingsCard.body.appendChild(makeRow('Z-index Position:', zIndexSelect));
+
     panelDiv.appendChild(settingsCard.card);
 
     // Marker styling card
@@ -1291,6 +1364,15 @@
       settings.disableBelowZoom = Math.min(22, Math.max(16, parseInt(e.target.value, 10)));
       e.target.value = settings.disableBelowZoom;
       saveSettings();
+    });
+
+    zIndexSelect.addEventListener('change', (e) => {
+      settings.zIndexPosition = e.target.value;
+      saveSettings();
+      if (e.target.value !== 'disabled') {
+        setZIndex();
+      }
+      logDebug(`Z-index position set to: ${e.target.value}`);
     });
 
     // Marker radius slider
