@@ -2,7 +2,7 @@
 // @name            WME HN NavPoints (beta)
 // @namespace       https://greasyfork.org/users/166843
 // @description     Shows navigation points of all house numbers in WME
-// @version         2026.05.17.00
+// @version         2026.05.18.00
 // @author          dBsooner
 // @grant           GM_info
 // @grant           GM_xmlhttpRequest
@@ -163,6 +163,8 @@
 
   const renderedSegmentIds = new Set(); // Track which segments are currently rendered on the map
   const cachedHNsBySegment = new Map(); // Cache HN data: segmentId -> HN[] (persisted between pan events)
+  const modifiedHNIds = new Set(); // Track HN IDs being edited (format: "segmentID/hnNumber")
+  const modifiedHNOps = new Map(); // Track operation type for each HN: "moved", "updated", "deleted", "added"
 
   // =====================================================================
   // SETTINGS MANAGEMENT
@@ -438,6 +440,13 @@
     const markerFeatures = [];
 
     for (const hnData of hnsWithSegments) {
+      // Skip HNs being edited — let WME's native markers show draft positions
+      const hnId = `${hnData.segmentId}/${hnData.number}`;
+      if (modifiedHNIds.has(hnId)) {
+        logDebug(`Skipping modified HN: ${hnId}`);
+        continue;
+      }
+
       try {
         // Get segment data for this HN (already verified it exists)
         const segment = sdk.DataModel.Segments.getById({ segmentId: hnData.segmentId });
@@ -575,6 +584,13 @@
       }
 
       for (const hnData of hnsArray) {
+        // Skip HNs being edited — let WME's native markers show draft positions
+        const hnId = `${segmentId}/${hnData.number}`;
+        if (modifiedHNIds.has(hnId)) {
+          logDebug(`rebuildLayersFromCache: Skipping modified HN ${hnId}`);
+          continue;
+        }
+
         try {
           const lineFeature = buildHNLineFeature(hnData, segment);
           if (lineFeature) lineFeatures.push(lineFeature);
@@ -715,17 +731,111 @@
       eventHandler: () => processSegmentsWithHNs(),
     });
 
-    // Segments saved — refresh HN display when segment data is persisted
-    // Clear cache to ensure segments are re-fetched (their geometry may have changed)
+    // Refresh modified HNs when save completes
     sdk.Events.on({
-      eventName: 'wme-data-model-objects-saved',
-      eventHandler: (event) => {
-        if (event.dataModelName === 'segments') {
-          log(`✓ Segments saved: ${event.objectIds.join(', ')}`);
-          logDebug('Clearing cache and refreshing HNs after segment save');
-          clearCache();
-          processSegmentsWithHNs();
+      eventName: 'wme-save-finished',
+      eventHandler: async (event) => {
+        if (!event.success || modifiedHNIds.size === 0) {
+          logDebug(`Save finished but no modified HNs to refresh (success=${event.success}, modifiedHNs=${modifiedHNIds.size})`);
+          return;
         }
+
+        logDebug(`Save finished! Refreshing ${modifiedHNIds.size} modified HNs`);
+
+        // Check if any HNs were added (they have a different ID format, just a number, or operation type is "added")
+        const hasAddedHNs = [...modifiedHNIds].some((hnId) => {
+          const isNumeric = typeof hnId === 'number' || (typeof hnId === 'string' && !/\//.test(hnId));
+          const isAddedOp = modifiedHNOps.get(hnId) === 'added';
+          return isNumeric || isAddedOp;
+        });
+
+        if (hasAddedHNs) {
+          logDebug(`New HNs detected; doing full viewport refresh`);
+          // For added HNs, we don't know which segment they belong to until we re-fetch all segments
+          modifiedHNIds.clear();
+          modifiedHNOps.clear();
+          clearCache();
+          await processSegmentsWithHNs();
+          log(`✓ HN display updated after save`);
+          return;
+        }
+
+        // Extract segment IDs from modified HNs (format: "segmentID/hnNumber")
+        const modifiedSegmentIds = new Set(
+          [...modifiedHNIds]
+            .map((hnId) => {
+              // Skip non-string IDs (added HNs are numbers, shouldn't reach here, but be defensive)
+              if (typeof hnId !== 'string') {
+                logDebug(`Skipping non-string HN ID: ${hnId}`);
+                return null;
+              }
+              const parts = hnId.split('/');
+              return parts.length === 2 ? parseInt(parts[0], 10) : null;
+            })
+            .filter((id) => id !== null)
+        );
+
+        try {
+          // Fetch fresh HN data for modified segments (now persisted)
+          const updatedHNs = await sdk.DataModel.HouseNumbers.fetchHouseNumbers({
+            segmentIds: Array.from(modifiedSegmentIds),
+          });
+
+          logDebug(`Fetched ${updatedHNs?.length || 0} HNs from API`);
+
+          // Build set of HN IDs that should exist after save
+          const apiHNIds = new Set(updatedHNs?.map(hn => hn.id) || []);
+
+          if (updatedHNs && updatedHNs.length > 0) {
+            // Update cache with fresh persisted data
+            updatedHNs.forEach((hn) => {
+              const segId = hn.segmentId;
+              const existing = cachedHNsBySegment.get(segId) || [];
+              // Replace old HN with updated one (by ID), or add if new
+              const filtered = existing.filter((h) => h.id !== hn.id);
+              filtered.push(hn);
+              cachedHNsBySegment.set(segId, filtered);
+
+              // For new HNs: ensure segment is marked as rendered so we don't re-fetch it
+              if (!renderedSegmentIds.has(segId)) {
+                renderedSegmentIds.add(segId);
+                logDebug(`Added segment ${segId} to rendered set (new HN)`);
+              }
+            });
+
+            logDebug(`Updated cache: ${updatedHNs.length} HNs with persisted data`);
+          }
+
+          // Handle deleted HNs: remove any HNs from cache that were in modifiedHNIds but aren't in the fresh API response
+          for (const modifiedHNId of modifiedHNIds) {
+            const [segIdStr, hnNumber] = modifiedHNId.split('/');
+            const segId = parseInt(segIdStr, 10);
+            const cachedHNs = cachedHNsBySegment.get(segId);
+
+            if (cachedHNs) {
+              const beforeCount = cachedHNs.length;
+              // Remove HNs that are no longer in the API response (i.e., they were deleted)
+              const filtered = cachedHNs.filter((h) => {
+                // Check if this HN exists in the fresh API response
+                return updatedHNs?.some(apiHN => apiHN.id === h.id);
+              });
+
+              if (filtered.length < beforeCount) {
+                const removedCount = beforeCount - filtered.length;
+                logDebug(`Removed ${removedCount} deleted HN(s) from segment ${segId}`);
+                cachedHNsBySegment.set(segId, filtered);
+              }
+            }
+          }
+        } catch (err) {
+          logError(`Error re-fetching modified segments after save:`, err);
+        }
+
+        // Clear modification tracking and rebuild layers
+        modifiedHNIds.clear();
+        modifiedHNOps.clear();
+        rebuildLayersFromCache();
+        log(`✓ HN display updated after save`);
       },
     });
 
@@ -779,6 +889,48 @@
           sdk.Map.redrawLayer({ layerName: LAYER_HN_MARKERS });
           saveSettings();
         }
+      },
+    });
+
+    // Track real-time HN edits (moved, updated, deleted, added)
+    // These fire before save; we skip rendering modified HNs and let WME's native markers show drafts
+    sdk.Events.on({
+      eventName: 'wme-house-number-moved',
+      eventHandler: (payload) => {
+        modifiedHNIds.add(payload.houseNumberId);
+        modifiedHNOps.set(payload.houseNumberId, 'moved');
+        logDebug(`HN moved: ${payload.houseNumberId}`);
+        rebuildLayersFromCache();
+      },
+    });
+
+    sdk.Events.on({
+      eventName: 'wme-house-number-updated',
+      eventHandler: (payload) => {
+        modifiedHNIds.add(payload.houseNumberId);
+        modifiedHNOps.set(payload.houseNumberId, 'updated');
+        logDebug(`HN updated: ${payload.houseNumberId}`);
+        rebuildLayersFromCache();
+      },
+    });
+
+    sdk.Events.on({
+      eventName: 'wme-house-number-deleted',
+      eventHandler: (payload) => {
+        modifiedHNIds.add(payload.houseNumberId);
+        modifiedHNOps.set(payload.houseNumberId, 'deleted');
+        logDebug(`HN deleted: ${payload.houseNumberId}`);
+        rebuildLayersFromCache();
+      },
+    });
+
+    sdk.Events.on({
+      eventName: 'wme-house-number-added',
+      eventHandler: (payload) => {
+        modifiedHNIds.add(payload.houseNumberId);
+        modifiedHNOps.set(payload.houseNumberId, 'added');
+        logDebug(`HN added: ${payload.houseNumberId}`);
+        rebuildLayersFromCache();
       },
     });
   }
