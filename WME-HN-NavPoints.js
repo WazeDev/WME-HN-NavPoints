@@ -24,7 +24,7 @@
  * SDK Migration (2026): Migrated from legacy W object and OpenLayers to WME SDK by JS55CT
  */
 
-/* global bootstrap, turf, WazeWrap, GM_info, unsafeWindow */
+/* global bootstrap, turf, WazeWrap, GM_info */
 
 (async function () {
   'use strict';
