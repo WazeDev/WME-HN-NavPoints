@@ -2,7 +2,7 @@
 // @name            WME HN NavPoints
 // @namespace       https://greasyfork.org/users/166843
 // @description     Shows navigation points of all house numbers in WME
-// @version         2026.05.18.01
+// @version         2026.07.02.00
 // @author          dBsooner
 // @grant           GM_info
 // @grant           GM_xmlhttpRequest
@@ -33,10 +33,7 @@
   // IMPORTANT: Update this when releasing a new version of script
   // **************************************************************************************************************
   const SHOW_UPDATE_MESSAGE = true;
-  const SCRIPT_VERSION_CHANGES = [
-    'WME SDK migration from legacy W object',
-    'Marker styling UI: size, font, opacity controls',
-  ];
+  const SCRIPT_VERSION_CHANGES = ['WME SDK migration from legacy W object', 'Marker styling UI: size, font, opacity controls'];
 
   // =====================================================================
   // CONSTANTS & METADATA
@@ -49,7 +46,8 @@
   const _SCRIPT_SHORT_NAME = `HN NavPoints${_IS_ALPHA_VERSION ? ' Ω' : _IS_BETA_VERSION ? ' β' : ''}`;
   const SCRIPT_VERSION = GM_info.script.version.toString();
   const _PROD_DL_URL = 'https://greasyfork.org/scripts/390565-wme-hn-navpoints/code/WME%20HN%20NavPoints.user.js';
-  const _BETA_DL_URL = 'YUhSMGNITTZMeTluY21WaGMzbG1iM0pyTG05eVp5OXpZM0pwY0hSekx6TTVNRFUzTXkxM2JXVXRhRzR0Ym1GMmNHOXBiblJ6TFdKbGRHRXZZMjlrWlM5WFRVVWxNakJJVGlVeU1FNWhkbEJ2YVc1MGN5VXlNQ2hpWlhSaEtTNTFjMlZ5TG1weg==';
+  const _BETA_DL_URL =
+    'YUhSMGNITTZMeTluY21WaGMzbG1iM0pyTG05eVp5OXpZM0pwY0hSekx6TTVNRFUzTXkxM2JXVXRhRzR0Ym1GMmNHOXBiblJ6TFdKbGRHRXZZMjlrWlM5WFRVVWxNakJJVGlVeU1FNWhkbEJ2YVc1MGN5VXlNQ2hpWlhSaEtTNTFjMlZ5TG1weg==';
 
   const dec = (s = '') => atob(atob(s));
 
@@ -58,9 +56,13 @@
   const SETTINGS_STORE_NAME = 'WMEHNNavPoints';
   const _LOAD_BEGIN_TIME = performance.now();
 
-  // Layer names
+  // Layer names (internal map layer identifiers)
   const LAYER_HN_LINES = 'HNNavPointsLinesLayer';
   const LAYER_HN_MARKERS = 'HNNavPointsMarkersLayer';
+
+  // Layer checkbox names (displayed in WME sidebar)
+  const CHECKBOX_NAME_HN_LINES = 'HN NavPoints Lines';
+  const CHECKBOX_NAME_HN_MARKERS = 'HN NavPoints Numbers';
 
   // =====================================================================
   // LOGGING UTILITIES
@@ -370,12 +372,12 @@
     logDebug(`Creating layer checkboxes: hnLines=${settings.hnLines}, hnNumbers=${settings.hnNumbers}`);
 
     sdk.LayerSwitcher.addLayerCheckbox({
-      name: 'HN NavPoints Lines',
+      name: CHECKBOX_NAME_HN_LINES,
       isChecked: settings.hnLines,
     });
 
     sdk.LayerSwitcher.addLayerCheckbox({
-      name: 'HN NavPoints Numbers',
+      name: CHECKBOX_NAME_HN_MARKERS,
       isChecked: settings.hnNumbers,
     });
 
@@ -826,7 +828,7 @@
               const parts = hnId.split('/');
               return parts.length === 2 ? parseInt(parts[0], 10) : null;
             })
-            .filter((id) => id !== null)
+            .filter((id) => id !== null),
         );
 
         try {
@@ -838,7 +840,7 @@
           logDebug(`Fetched ${updatedHNs?.length || 0} HNs from API`);
 
           // Build set of HN IDs that should exist after save
-          const apiHNIds = new Set(updatedHNs?.map(hn => hn.id) || []);
+          const apiHNIds = new Set(updatedHNs?.map((hn) => hn.id) || []);
 
           if (updatedHNs && updatedHNs.length > 0) {
             // Update cache with fresh persisted data
@@ -871,7 +873,7 @@
               // Remove HNs that are no longer in the API response (i.e., they were deleted)
               const filtered = cachedHNs.filter((h) => {
                 // Check if this HN exists in the fresh API response
-                return updatedHNs?.some(apiHN => apiHN.id === h.id);
+                return updatedHNs?.some((apiHN) => apiHN.id === h.id);
               });
 
               if (filtered.length < beforeCount) {
@@ -923,7 +925,7 @@
       eventHandler: async (checkboxInfo) => {
         logDebug(`Layer checkbox event:`, checkboxInfo);
 
-        if (checkboxInfo.name === 'HN NavPoints Lines') {
+        if (checkboxInfo.name === CHECKBOX_NAME_HN_LINES) {
           settings.hnLines = checkboxInfo.checked;
           logDebug(`HN Lines layer toggled: ${checkboxInfo.checked}`);
           // Set layer visibility directly
@@ -934,7 +936,7 @@
           sdk.Map.redrawLayer({ layerName: `${LAYER_HN_LINES}_colored` });
           saveSettings();
         }
-        if (checkboxInfo.name === 'HN NavPoints Numbers') {
+        if (checkboxInfo.name === CHECKBOX_NAME_HN_MARKERS) {
           settings.hnNumbers = checkboxInfo.checked;
           logDebug(`HN Numbers layer toggled: ${checkboxInfo.checked}`);
           // Set layer visibility directly
@@ -997,8 +999,14 @@
   function onToggleHNLinesShortcut() {
     try {
       settings.hnLines = !settings.hnLines;
+
+      // Update map rendering
       sdk.Map.setLayerVisibility({ layerName: LAYER_HN_LINES, visibility: settings.hnLines });
       sdk.Map.setLayerVisibility({ layerName: `${LAYER_HN_LINES}_colored`, visibility: settings.hnLines });
+
+      // Update sidebar checkbox state
+      sdk.LayerSwitcher.setLayerCheckboxChecked({ name: CHECKBOX_NAME_HN_LINES, isChecked: settings.hnLines });
+
       sdk.Map.redrawLayer({ layerName: LAYER_HN_LINES });
       sdk.Map.redrawLayer({ layerName: `${LAYER_HN_LINES}_colored` });
       saveSettings();
@@ -1011,7 +1019,13 @@
   function onToggleHNNumbersShortcut() {
     try {
       settings.hnNumbers = !settings.hnNumbers;
+
+      // Update map rendering
       sdk.Map.setLayerVisibility({ layerName: LAYER_HN_MARKERS, visibility: settings.hnNumbers });
+
+      // Update sidebar checkbox state
+      sdk.LayerSwitcher.setLayerCheckboxChecked({ name: CHECKBOX_NAME_HN_MARKERS, isChecked: settings.hnNumbers });
+
       sdk.Map.redrawLayer({ layerName: LAYER_HN_MARKERS });
       saveSettings();
     } catch (err) {
