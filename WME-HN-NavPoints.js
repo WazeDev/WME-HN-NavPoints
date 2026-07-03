@@ -2,7 +2,7 @@
 // @name            WME HN NavPoints
 // @namespace       https://greasyfork.org/users/166843
 // @description     Shows navigation points of all house numbers in WME
-// @version         2026.07.02.00
+// @version         2026.07.03.00
 // @author          dBsooner
 // @grant           GM_info
 // @grant           GM_xmlhttpRequest
@@ -33,7 +33,13 @@
   // IMPORTANT: Update this when releasing a new version of script
   // **************************************************************************************************************
   const SHOW_UPDATE_MESSAGE = true;
-  const SCRIPT_VERSION_CHANGES = ['WME SDK migration from legacy W object', 'Marker styling UI: size, font, opacity controls'];
+  const SCRIPT_VERSION_CHANGES = [
+    'V.2026.07.02.00',
+    'WME SDK migration from legacy W object',
+    'Marker styling UI: size, font, opacity controls',
+    'V.2026.07.03.00',
+    'Add: Clickable HN markers activate native layer for editing',
+  ];
 
   // =====================================================================
   // CONSTANTS & METADATA
@@ -780,6 +786,32 @@
   /** Register SDK event listeners for map data, segment saves, zoom changes, and layer toggles. */
   function setupEventListeners() {
     logDebug('Setting up event listeners');
+
+    // Enable click detection on HN markers layer
+    sdk.Events.trackLayerEvents({ layerName: LAYER_HN_MARKERS });
+
+    // Handle clicks on HN markers — activate native HN layer for editing
+    sdk.Events.on({
+      eventName: 'wme-layer-feature-clicked',
+      eventHandler: (payload) => {
+        if (payload.layerName !== LAYER_HN_MARKERS) return;
+
+        // Native HN layer checkbox is not exposed via SDK, so click DOM directly
+        const hnCheckbox = document.querySelector('#layer-switcher-item_house_numbers');
+        if (hnCheckbox) {
+          // Only activate if not already checked
+          const isChecked = hnCheckbox.hasAttribute('checked') || hnCheckbox.getAttribute('aria-checked') === 'true';
+          if (!isChecked) {
+            hnCheckbox.click();
+            log('✓ Activated native House numbers layer');
+          } else {
+            logDebug('House numbers layer already active');
+          }
+        } else {
+          logDebug('House numbers layer checkbox not found in DOM');
+        }
+      },
+    });
 
     // Map data loaded — fires when WME fetches segments from server
     sdk.Events.on({
