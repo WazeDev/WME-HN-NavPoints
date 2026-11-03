@@ -2,8 +2,8 @@
 // @name            WME HN NavPoints
 // @namespace       https://greasyfork.org/users/166843
 // @description     Shows navigation points of all house numbers in WME
-// @version         2026.07.03.00
-// @author          dBsooner
+// @version         2026.11.03.00
+// @author          dBsooner / JS55CT
 // @grant           GM_info
 // @grant           GM_xmlhttpRequest
 // @connect         greasyfork.org
@@ -34,11 +34,7 @@
   // **************************************************************************************************************
   const SHOW_UPDATE_MESSAGE = true;
   const SCRIPT_VERSION_CHANGES = [
-    'V.2026.07.02.00',
-    'WME SDK migration from legacy W object',
-    'Marker styling UI: size, font, opacity controls',
-    'V.2026.07.03.00',
-    'Add: Clickable HN markers activate native layer for editing',
+    'Updated to use the new SDK Async Mode!',
   ];
 
   // =====================================================================
@@ -89,6 +85,11 @@
     if (_DEBUG) log(msg, data);
   }
 
+  /** Wrap an async listener so a rejection is logged instead of escaping as an unhandled promise error. */
+  function safe(fn) {
+    return (...args) => Promise.resolve(fn(...args)).catch((err) => logError('Handler failed:', err));
+  }
+
   // =====================================================================
   // UTILITY FUNCTIONS
   // =====================================================================
@@ -97,11 +98,11 @@
   // SHORTCUT HELPER FUNCTIONS (from WMEPIE, verified 2026-03-11)
   // =====================================================================
   /* prettier-ignore */
-  const _KEYCODE_TO_CHAR = { 65: 'A', 66: 'B', 67: 'C', 68: 'D', 69: 'E', 70: 'F', 71: 'G', 72: 'H', 73: 'I', 74: 'J', 75: 'K', 76: 'L', 77: 'M', 
-    78: 'N', 79: 'O', 80: 'P', 81: 'Q', 82: 'R', 83: 'S', 84: 'T', 85: 'U', 86: 'V', 87: 'W', 88: 'X', 89: 'Y', 90: 'Z', 48: '0', 49: '1', 
-    50: '2', 51: '3', 52: '4', 53: '5', 54: '6', 55: '7', 56: '8', 57: '9', 112: 'F1', 113: 'F2', 114: 'F3', 115: 'F4', 116: 'F5', 117: 'F6', 
-    118: 'F7', 119: 'F8', 120: 'F9', 121: 'F10', 122: 'F11', 123: 'F12', 32: 'Space', 13: 'Enter', 9: 'Tab', 27: 'Esc', 8: 'Backspace', 
-    46: 'Delete', 36: 'Home', 35: 'End', 33: 'PageUp', 34: 'PageDown', 45: 'Insert', 37: '←', 38: '↑', 39: '→', 40: '↓', 188: ',', 190: '.', 
+  const _KEYCODE_TO_CHAR = { 65: 'A', 66: 'B', 67: 'C', 68: 'D', 69: 'E', 70: 'F', 71: 'G', 72: 'H', 73: 'I', 74: 'J', 75: 'K', 76: 'L', 77: 'M',
+    78: 'N', 79: 'O', 80: 'P', 81: 'Q', 82: 'R', 83: 'S', 84: 'T', 85: 'U', 86: 'V', 87: 'W', 88: 'X', 89: 'Y', 90: 'Z', 48: '0', 49: '1',
+    50: '2', 51: '3', 52: '4', 53: '5', 54: '6', 55: '7', 56: '8', 57: '9', 112: 'F1', 113: 'F2', 114: 'F3', 115: 'F4', 116: 'F5', 117: 'F6',
+    118: 'F7', 119: 'F8', 120: 'F9', 121: 'F10', 122: 'F11', 123: 'F12', 32: 'Space', 13: 'Enter', 9: 'Tab', 27: 'Esc', 8: 'Backspace',
+    46: 'Delete', 36: 'Home', 35: 'End', 33: 'PageUp', 34: 'PageDown', 45: 'Insert', 37: '←', 38: '↑', 39: '→', 40: '↓', 188: ',', 190: '.',
     191: '/', 186: ';', 222: "'", 219: '[', 221: ']', 220: '\\', 189: '-', 187: '=', 192: '`' };
 
   const _CHAR_TO_KEYCODE = Object.fromEntries(Object.entries(_KEYCODE_TO_CHAR).map(([k, v]) => [v.toUpperCase(), Number(k)]));
@@ -202,13 +203,9 @@
     settings.toggleHNNavPointsNumbersShortcut = _normalizeShortcut(settings.toggleHNNavPointsNumbersShortcut);
   }
 
-  /** Save settings to localStorage, capturing user-modified shortcuts from SDK. */
-  function saveSettings() {
-    settings.lastVersion = SCRIPT_VERSION;
-    settings.lastSaved = Date.now();
-
-    // Capture any user-modified shortcut keys from SDK
-    const allShortcuts = sdk.Shortcuts.getAllShortcuts();
+  /** Read user-modified shortcut keys from the SDK into settings (no storage write). */
+  async function captureShortcutKeys() {
+    const allShortcuts = (await sdk.Shortcuts.getAllShortcuts()) || [];
     allShortcuts.forEach((sc) => {
       if (sc.shortcutId === 'ToggleHNNavPointsShortcut') {
         settings.toggleHNNavPointsShortcut = _normalizeShortcut(sc.shortcutKeys);
@@ -216,6 +213,12 @@
         settings.toggleHNNavPointsNumbersShortcut = _normalizeShortcut(sc.shortcutKeys);
       }
     });
+  }
+
+  /** Write settings to localStorage. Sync so it can run from beforeunload; reads no SDK values. */
+  function persistSettings() {
+    settings.lastVersion = SCRIPT_VERSION;
+    settings.lastSaved = Date.now();
 
     const toSave = {
       disableBelowZoom: settings.disableBelowZoom,
@@ -234,28 +237,34 @@
     logDebug('Settings saved');
   }
 
+  /** Capture user-modified shortcut keys from the SDK, then persist settings. */
+  async function saveSettings() {
+    await captureShortcutKeys();
+    persistSettings();
+  }
+
   // =====================================================================
   // LAYER CREATION & MANAGEMENT
   // =====================================================================
 
   /** Adjust Z-index of HN layers relative to GIS Layers. Always maintains: LINES (bottom) < LINES_colored (middle) < MARKERS (top). */
-  function setZIndex() {
+  async function setZIndex() {
     if (settings.zIndexPosition === 'disabled') {
       logDebug('Z-index adjustment disabled');
       return;
     }
     logDebug(`Adjusting Z-index: NavPoints ${settings.zIndexPosition} GIS Layers...`);
     try {
-      const gisZIndex = sdk.Map.getLayerZIndex({ layerName: 'GIS Layers - Default' });
+      const gisZIndex = await sdk.Map.getLayerZIndex({ layerName: 'GIS Layers - Default' });
       if (settings.zIndexPosition === 'above') {
-        sdk.Map.setLayerZIndex({ layerName: LAYER_HN_LINES, zIndex: gisZIndex + 6 });
-        sdk.Map.setLayerZIndex({ layerName: `${LAYER_HN_LINES}_colored`, zIndex: gisZIndex + 7 });
-        sdk.Map.setLayerZIndex({ layerName: LAYER_HN_MARKERS, zIndex: gisZIndex + 8 });
+        await sdk.Map.setLayerZIndex({ layerName: LAYER_HN_LINES, zIndex: gisZIndex + 6 });
+        await sdk.Map.setLayerZIndex({ layerName: `${LAYER_HN_LINES}_colored`, zIndex: gisZIndex + 7 });
+        await sdk.Map.setLayerZIndex({ layerName: LAYER_HN_MARKERS, zIndex: gisZIndex + 8 });
       } else {
         // below: markers closest to GIS (-1), then colored (-2), then lines (-3)
-        sdk.Map.setLayerZIndex({ layerName: LAYER_HN_LINES, zIndex: gisZIndex - 3 });
-        sdk.Map.setLayerZIndex({ layerName: `${LAYER_HN_LINES}_colored`, zIndex: gisZIndex - 2 });
-        sdk.Map.setLayerZIndex({ layerName: LAYER_HN_MARKERS, zIndex: gisZIndex - 1 });
+        await sdk.Map.setLayerZIndex({ layerName: LAYER_HN_LINES, zIndex: gisZIndex - 3 });
+        await sdk.Map.setLayerZIndex({ layerName: `${LAYER_HN_LINES}_colored`, zIndex: gisZIndex - 2 });
+        await sdk.Map.setLayerZIndex({ layerName: LAYER_HN_MARKERS, zIndex: gisZIndex - 1 });
       }
       logDebug(`✓ Z-index adjusted: HN layers now ${settings.zIndexPosition} GIS Layers (markers always on top)`);
     } catch (e) {
@@ -263,17 +272,17 @@
         throw e;
       }
       logDebug('GIS Layers not yet available, watching for it...');
-      const observer = new MutationObserver(() => {
+      const observer = new MutationObserver(async () => {
         try {
-          const gisZIndex = sdk.Map.getLayerZIndex({ layerName: 'GIS Layers - Default' });
+          const gisZIndex = await sdk.Map.getLayerZIndex({ layerName: 'GIS Layers - Default' });
           if (settings.zIndexPosition === 'above') {
-            sdk.Map.setLayerZIndex({ layerName: LAYER_HN_LINES, zIndex: gisZIndex + 6 });
-            sdk.Map.setLayerZIndex({ layerName: `${LAYER_HN_LINES}_colored`, zIndex: gisZIndex + 7 });
-            sdk.Map.setLayerZIndex({ layerName: LAYER_HN_MARKERS, zIndex: gisZIndex + 8 });
+            await sdk.Map.setLayerZIndex({ layerName: LAYER_HN_LINES, zIndex: gisZIndex + 6 });
+            await sdk.Map.setLayerZIndex({ layerName: `${LAYER_HN_LINES}_colored`, zIndex: gisZIndex + 7 });
+            await sdk.Map.setLayerZIndex({ layerName: LAYER_HN_MARKERS, zIndex: gisZIndex + 8 });
           } else {
-            sdk.Map.setLayerZIndex({ layerName: LAYER_HN_LINES, zIndex: gisZIndex - 3 });
-            sdk.Map.setLayerZIndex({ layerName: `${LAYER_HN_LINES}_colored`, zIndex: gisZIndex - 2 });
-            sdk.Map.setLayerZIndex({ layerName: LAYER_HN_MARKERS, zIndex: gisZIndex - 1 });
+            await sdk.Map.setLayerZIndex({ layerName: LAYER_HN_LINES, zIndex: gisZIndex - 3 });
+            await sdk.Map.setLayerZIndex({ layerName: `${LAYER_HN_LINES}_colored`, zIndex: gisZIndex - 2 });
+            await sdk.Map.setLayerZIndex({ layerName: LAYER_HN_MARKERS, zIndex: gisZIndex - 1 });
           }
           logDebug(`✓ Z-index adjusted after GIS Layers loaded: ${settings.zIndexPosition} GIS Layers`);
           observer.disconnect();
@@ -293,7 +302,7 @@
 
     // Create two layers: one for black outline, one for colored stroke
 
-    sdk.Map.addLayer({
+    await sdk.Map.addLayer({
       layerName: LAYER_HN_LINES,
       zIndexing: true,
       styleRules: [
@@ -315,7 +324,7 @@
     });
 
     // Colored stroke layer (on top of black outline)
-    sdk.Map.addLayer({
+    await sdk.Map.addLayer({
       layerName: `${LAYER_HN_LINES}_colored`,
       zIndexing: true,
       styleRules: [
@@ -339,7 +348,7 @@
       },
     });
 
-    sdk.Map.addLayer({
+    await sdk.Map.addLayer({
       layerName: LAYER_HN_MARKERS,
       zIndexing: true,
       styleRules: [
@@ -377,12 +386,12 @@
     // Register layers in the layer switcher
     logDebug(`Creating layer checkboxes: hnLines=${settings.hnLines}, hnNumbers=${settings.hnNumbers}`);
 
-    sdk.LayerSwitcher.addLayerCheckbox({
+    await sdk.LayerSwitcher.addLayerCheckbox({
       name: CHECKBOX_NAME_HN_LINES,
       isChecked: settings.hnLines,
     });
 
-    sdk.LayerSwitcher.addLayerCheckbox({
+    await sdk.LayerSwitcher.addLayerCheckbox({
       name: CHECKBOX_NAME_HN_MARKERS,
       isChecked: settings.hnNumbers,
     });
@@ -390,7 +399,7 @@
     logDebug('✓ Layers created and registered in WME Map layers');
 
     // Adjust Z-index to sit above GIS Layers
-    setZIndex();
+    await setZIndex();
   }
 
   // =====================================================================
@@ -475,22 +484,23 @@
   // =====================================================================
 
   /** Remove all HN features from all layers. */
-  function clearAllHNs() {
+  async function clearAllHNs() {
     logDebug('Clearing all HN features');
-    sdk.Map.removeAllFeaturesFromLayer({ layerName: LAYER_HN_LINES });
-    sdk.Map.removeAllFeaturesFromLayer({ layerName: `${LAYER_HN_LINES}_colored` });
-    sdk.Map.removeAllFeaturesFromLayer({ layerName: LAYER_HN_MARKERS });
+    await sdk.Map.removeAllFeaturesFromLayer({ layerName: LAYER_HN_LINES });
+    await sdk.Map.removeAllFeaturesFromLayer({ layerName: `${LAYER_HN_LINES}_colored` });
+    await sdk.Map.removeAllFeaturesFromLayer({ layerName: LAYER_HN_MARKERS });
   }
 
   /** Build and add HN line and marker features to the map layers. */
   async function drawHNs(houseNumbersData) {
     if (!houseNumbersData || houseNumbersData.length === 0) return;
 
-    // Filter to only HNs whose segments are loaded
-    const hnsWithSegments = houseNumbersData.filter((hn) => {
-      const segment = sdk.DataModel.Segments.getById({ segmentId: hn.segmentId });
-      return !!segment;
-    });
+    // Filter to only HNs whose segments are loaded. Sequential loop: an async predicate would be ignored by filter().
+    const hnsWithSegments = [];
+    for (const hn of houseNumbersData) {
+      const segment = await sdk.DataModel.Segments.getById({ segmentId: hn.segmentId });
+      if (segment) hnsWithSegments.push(hn);
+    }
 
     if (hnsWithSegments.length < houseNumbersData.length) {
       logDebug(`Drawing ${hnsWithSegments.length}/${houseNumbersData.length} HNs (${houseNumbersData.length - hnsWithSegments.length} segments not yet loaded)`);
@@ -510,8 +520,9 @@
       }
 
       try {
-        // Get segment data for this HN (already verified it exists)
-        const segment = sdk.DataModel.Segments.getById({ segmentId: hnData.segmentId });
+        // Get segment data for this HN (may have left the model during the awaits above)
+        const segment = await sdk.DataModel.Segments.getById({ segmentId: hnData.segmentId });
+        if (!segment) continue;
 
         // Build line feature
         const lineFeature = buildHNLineFeature(hnData, segment);
@@ -537,12 +548,12 @@
     if (lineFeatures.length > 0) {
       try {
         logDebug(`Adding ${lineFeatures.length} line features to ${LAYER_HN_LINES}...`);
-        sdk.Map.addFeaturesToLayer({
+        await sdk.Map.addFeaturesToLayer({
           features: lineFeatures,
           layerName: LAYER_HN_LINES,
         });
         // Also add to colored layer for the colored stroke effect
-        sdk.Map.addFeaturesToLayer({
+        await sdk.Map.addFeaturesToLayer({
           features: lineFeatures,
           layerName: `${LAYER_HN_LINES}_colored`,
         });
@@ -555,7 +566,7 @@
     if (markerFeatures.length > 0) {
       try {
         logDebug(`Adding ${markerFeatures.length} marker features to ${LAYER_HN_MARKERS}...`);
-        sdk.Map.addFeaturesToLayer({
+        await sdk.Map.addFeaturesToLayer({
           features: markerFeatures,
           layerName: LAYER_HN_MARKERS,
         });
@@ -574,7 +585,7 @@
 
   /** Fetch segments in viewport, compute add/remove sets, and update cache/layers incrementally. */
   async function processSegmentsWithHNs() {
-    const zoomLevel = sdk.Map.getZoomLevel();
+    const zoomLevel = await sdk.Map.getZoomLevel();
 
     // Below zoom threshold: don't process, cache is preserved for when user zooms back in
     if (zoomLevel < settings.disableBelowZoom) {
@@ -585,14 +596,14 @@
     // Disabled: clear and return
     if (!settings.hnLines && !settings.hnNumbers) {
       logDebug('Both hnLines and hnNumbers disabled, skipping');
-      clearCache();
+      await clearCache();
       return;
     }
 
     try {
       // PHASE 2: Smart viewport-based caching
       // Get current segments with house numbers in viewport
-      const allSegments = sdk.DataModel.Segments.getAll();
+      const allSegments = (await sdk.DataModel.Segments.getAll()) || [];
       const currentSegmentIds = new Set(allSegments.filter((s) => s?.hasHouseNumbers === true).map((s) => s.id));
 
       if (currentSegmentIds.size === 0) {
@@ -629,17 +640,17 @@
   // CACHING HELPER FUNCTIONS
   // =====================================================================
 
-  /**
-   * Rebuild all layers from cachedHNsBySegment map (used after removing segments)
-   * Much faster than fetching fresh data since HNs are already cached
-   */
-  /** Clear layers and rebuild all features from cache (used when segments leave viewport). */
-  function rebuildLayersFromCache() {
+  // Rebuilds remove all layer features and then re-add them. With awaits in between, two overlapping
+  // rebuilds could interleave and duplicate features, so each rebuild runs after the previous one finishes.
+  let rebuildQueue = Promise.resolve();
+
+  /** Body of rebuildLayersFromCache. Call only through rebuildLayersFromCache so rebuilds stay serialized. */
+  async function doRebuildLayersFromCache() {
     const lineFeatures = [];
     const markerFeatures = [];
 
     for (const [segmentId, hnsArray] of cachedHNsBySegment) {
-      const segment = sdk.DataModel.Segments.getById({ segmentId });
+      const segment = await sdk.DataModel.Segments.getById({ segmentId });
       if (!segment) {
         logDebug(`rebuildLayersFromCache: Segment ${segmentId} not found, skipping`);
         continue;
@@ -666,20 +677,30 @@
     }
 
     // Clear and add all features back
-    sdk.Map.removeAllFeaturesFromLayer({ layerName: LAYER_HN_LINES });
-    sdk.Map.removeAllFeaturesFromLayer({ layerName: `${LAYER_HN_LINES}_colored` });
-    sdk.Map.removeAllFeaturesFromLayer({ layerName: LAYER_HN_MARKERS });
+    await sdk.Map.removeAllFeaturesFromLayer({ layerName: LAYER_HN_LINES });
+    await sdk.Map.removeAllFeaturesFromLayer({ layerName: `${LAYER_HN_LINES}_colored` });
+    await sdk.Map.removeAllFeaturesFromLayer({ layerName: LAYER_HN_MARKERS });
 
     if (lineFeatures.length > 0) {
-      sdk.Map.addFeaturesToLayer({ features: lineFeatures, layerName: LAYER_HN_LINES });
-      sdk.Map.addFeaturesToLayer({ features: lineFeatures, layerName: `${LAYER_HN_LINES}_colored` });
+      await sdk.Map.addFeaturesToLayer({ features: lineFeatures, layerName: LAYER_HN_LINES });
+      await sdk.Map.addFeaturesToLayer({ features: lineFeatures, layerName: `${LAYER_HN_LINES}_colored` });
     }
 
     if (markerFeatures.length > 0) {
-      sdk.Map.addFeaturesToLayer({ features: markerFeatures, layerName: LAYER_HN_MARKERS });
+      await sdk.Map.addFeaturesToLayer({ features: markerFeatures, layerName: LAYER_HN_MARKERS });
     }
 
     logDebug(`rebuildLayersFromCache: Re-rendered ${lineFeatures.length} lines and ${markerFeatures.length} markers from cache`);
+  }
+
+  /**
+   * Rebuild all layers from cachedHNsBySegment map (used after removing segments)
+   * Much faster than fetching fresh data since HNs are already cached
+   */
+  /** Clear layers and rebuild all features from cache (used when segments leave viewport). Queued; never rejects. */
+  function rebuildLayersFromCache() {
+    rebuildQueue = rebuildQueue.then(doRebuildLayersFromCache).catch((err) => logError('rebuildLayersFromCache failed:', err));
+    return rebuildQueue;
   }
 
   /**
@@ -761,7 +782,7 @@
     }
 
     // Rebuild layers from remaining cache
-    rebuildLayersFromCache();
+    await rebuildLayersFromCache();
 
     const elapsed = performance.now() - startTime;
     log(`Removed ${segmentIds.length} segments (${removedHNCount} HNs) in ${elapsed.toFixed(0)}ms`);
@@ -772,11 +793,194 @@
    * Clear all cache and layers (used on zoom level changes or save events)
    */
   /** Clear all cached segments and HN data, and remove all features from layers. */
-  function clearCache() {
+  async function clearCache() {
     renderedSegmentIds.clear();
     cachedHNsBySegment.clear();
-    clearAllHNs();
+    await clearAllHNs();
     logDebug('Cache cleared (renderedSegmentIds and cachedHNsBySegment)');
+  }
+
+  // =====================================================================
+  // HOUSE NUMBER NUDGE FEATURE
+  // =====================================================================
+
+  /**
+   * Get nudgeable house numbers from currently-selected WME segments.
+   * Returns only orange HNs (forced & updated) from segments in the viewport cache.
+   */
+  async function getNudgeableHousNumbers() {
+    const selection = await sdk.Editing.getSelection();
+
+    // Validate selection exists and is of type 'segment'
+    if (!selection || selection.objectType !== 'segment' || !selection.ids || selection.ids.length === 0) {
+      const reason = !selection ? 'No selection' : selection.objectType ? `Selection is ${selection.objectType}(s), not segments` : 'No IDs in selection';
+      return { houseNumbers: [], segmentCount: 0, hnCount: 0, success: false, message: `Cannot nudge: ${reason}` };
+    }
+
+    const selectedSegmentIds = selection.ids.filter((id) => typeof id === 'number');
+    if (selectedSegmentIds.length === 0) {
+      return { houseNumbers: [], segmentCount: 0, hnCount: 0, success: false, message: 'No valid segment IDs in selection' };
+    }
+
+    const nudgeableHNs = [];
+    let segmentWithHNCount = 0;
+
+    for (const segmentId of selectedSegmentIds) {
+      const segmentHNs = cachedHNsBySegment.get(segmentId);
+      if (!segmentHNs || segmentHNs.length === 0) continue;
+
+      segmentWithHNCount += 1;
+
+      // Filter for yellow HNs only (updated & untouched)
+      const yellowHNs = segmentHNs.filter((hn) => {
+        const isForced = typeof hn.isForced === 'function' ? hn.isForced() : (hn.isForced ?? hn.forced);
+        const hasUpdatedBy = typeof hn.getUpdatedBy === 'function' ? hn.getUpdatedBy() : !!hn.updatedBy;
+        return !isForced && !hasUpdatedBy;
+      });
+
+      nudgeableHNs.push(...yellowHNs);
+    }
+
+    if (nudgeableHNs.length === 0) {
+      return {
+        houseNumbers: [],
+        segmentCount: segmentWithHNCount,
+        hnCount: 0,
+        success: false,
+        message: `No yellow HNs found on ${segmentWithHNCount} selected segment(s)`,
+      };
+    }
+
+    return {
+      houseNumbers: nudgeableHNs,
+      segmentCount: segmentWithHNCount,
+      hnCount: nudgeableHNs.length,
+      success: true,
+      message: `Found ${nudgeableHNs.length} orange HN(s) on ${segmentWithHNCount} segment(s)`,
+    };
+  }
+
+  /**
+   * Apply micro-offset to house numbers (nudge longitude by ±1 in 6th decimal place).
+   * This triggers WME's edit state without meaningfully changing HN location.
+   * Returns summary of successes and failures.
+   */
+  async function nudgeHouseNumbers(houseNumbers) {
+    if (!houseNumbers || houseNumbers.length === 0) {
+      return { succeeded: 0, failed: 0, errors: [] };
+    }
+
+    const results = { succeeded: 0, failed: 0, errors: [] };
+
+    for (const hn of houseNumbers) {
+      try {
+        // Extract current coordinates
+        const currentCoords = hn.geometry?.coordinates;
+        if (!currentCoords || !Array.isArray(currentCoords) || currentCoords.length < 2) {
+          results.failed += 1;
+          results.errors.push(`HN ${hn.id}: Invalid geometry`);
+          continue;
+        }
+
+        const [lon, lat] = currentCoords;
+
+        // Nudge: increment longitude by 1 in the 6th decimal place (~1-2 feet)
+        const nudgedLon = Math.round(lon * 1000000) / 1000000 + 0.000001;
+
+        // Create new Point geometry
+        const newPoint = {
+          type: 'Point',
+          coordinates: [nudgedLon, lat],
+        };
+
+        // SCRIPT-DEBUG (temporary): compare cached HN, segment lookup, and a fresh fetch for the same segment
+        // console.log('SCRIPT-DEBUG nudge', {
+        //   id: hn.id, number: hn.number, segmentId: hn.segmentId, idType: typeof hn.id,
+        //   cachedHn: hn,
+        //   segmentFound: !!(await sdk.DataModel.Segments.getById({ segmentId: hn.segmentId })),
+        //   freshHNsOnSegment: (await sdk.DataModel.HouseNumbers.fetchHouseNumbers({ segmentIds: [hn.segmentId] })).map((h) => ({ id: h.id, number: h.number, segmentId: h.segmentId })),
+        // });
+
+        // Call SDK to move the HN (awaited so a rejection is counted as a failure, not left unhandled)
+        await sdk.DataModel.HouseNumbers.moveHouseNumber({
+          houseNumberId: hn.id,
+          point: newPoint,
+          segmentId: hn.segmentId,
+        });
+
+        // Track as nudged in modifiedHNIds and modifiedHNOps
+        modifiedHNIds.add(hn.id);
+        modifiedHNOps.set(hn.id, 'nudged');
+
+        results.succeeded += 1;
+        logDebug(`Nudged HN ${hn.id} (${hn.number || '?'}): [${lon}, ${lat}] → [${nudgedLon}, ${lat}]`);
+      } catch (err) {
+        results.failed += 1;
+        results.errors.push(`HN ${hn.id}: ${err.message}`);
+        logError(`Failed to nudge HN ${hn.id}:`, err);
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * Whether the user may use the nudge feature: Country Managers, Area Managers (Level 5+), or Rank 6+ editors.
+   * `rank` is zero-based, so `rank >= 4` is Level 5+ and `rank >= 5` is Rank 6+.
+   */
+  function canNudge(userInfo) {
+    return !!userInfo && !!(userInfo.isCountryManager || (userInfo.isAreaManager && userInfo.rank >= 4) || userInfo.rank >= 5);
+  }
+
+  /**
+   * Main handler for "Nudge" button click.
+   * Gets nudgeable HNs, confirms with user, applies nudge, and shows results via WazeWrap alerts.
+   */
+  async function handleNudgeClick() {
+    // Validate user authorization
+    const userInfo = await sdk.State.getUserInfo();
+    if (!canNudge(userInfo)) {
+      WazeWrap.Alerts.error(_SCRIPT_LONG_NAME, 'Cannot nudge: not authorized.');
+      return;
+    }
+
+    // Get nudgeable HNs
+    const result = await getNudgeableHousNumbers();
+
+    if (!result.success) {
+      WazeWrap.Alerts.error(_SCRIPT_LONG_NAME, result.message);
+      return;
+    }
+
+    // Nudging only works while WME's native House Numbers layer is visible
+    const nativeHNVisible = await sdk.LayerSwitcher.getWMELayerVisibility({ layerName: 'houseNumbers' });
+    if (!nativeHNVisible) {
+      WazeWrap.Alerts.error(_SCRIPT_LONG_NAME, 'Turn on WME\'s native House Numbers layer, then try again. Nudging does not work while it is off.');
+      return;
+    }
+
+    // Confirm with user
+    const confirmMsg = `Nudge ${result.hnCount} yellow HN(s) on ${result.segmentCount} segment(s)?`;
+    WazeWrap.Alerts.confirm(_SCRIPT_LONG_NAME, confirmMsg, async () => {
+      // Apply nudge
+      const nudgeResults = await nudgeHouseNumbers(result.houseNumbers);
+
+      // Show results
+      if (nudgeResults.failed > 0) {
+        const resultMsg = `Nudged ${nudgeResults.succeeded}/${result.hnCount} HNs. ${nudgeResults.failed} failed.`;
+        WazeWrap.Alerts.error(_SCRIPT_LONG_NAME, resultMsg);
+        if (nudgeResults.errors.length > 0) {
+          logDebug('Nudge errors:', nudgeResults.errors.join('; '));
+        }
+      } else {
+        const resultMsg = `Successfully nudged ${nudgeResults.succeeded} HN(s)!`;
+        logDebug( resultMsg);
+        //WazeWrap.Alerts.info(_SCRIPT_LONG_NAME, resultMsg);
+      }
+
+      // Refresh map display
+      await rebuildLayersFromCache();
+    });
   }
 
   // =====================================================================
@@ -784,11 +988,11 @@
   // =====================================================================
 
   /** Register SDK event listeners for map data, segment saves, zoom changes, and layer toggles. */
-  function setupEventListeners() {
+  async function setupEventListeners() {
     logDebug('Setting up event listeners');
 
     // Enable click detection on HN markers layer
-    sdk.Events.trackLayerEvents({ layerName: LAYER_HN_MARKERS });
+    await sdk.Events.trackLayerEvents({ layerName: LAYER_HN_MARKERS });
 
     // Handle clicks on HN markers — activate native HN layer for editing
     sdk.Events.on({
@@ -816,13 +1020,13 @@
     // Map data loaded — fires when WME fetches segments from server
     sdk.Events.on({
       eventName: 'wme-map-data-loaded',
-      eventHandler: () => processSegmentsWithHNs(),
+      eventHandler: safe(() => processSegmentsWithHNs()),
     });
 
     // Refresh modified HNs when save completes
     sdk.Events.on({
       eventName: 'wme-save-finished',
-      eventHandler: async (event) => {
+      eventHandler: safe(async (event) => {
         if (!event.success || modifiedHNIds.size === 0) {
           logDebug(`Save finished but no modified HNs to refresh (success=${event.success}, modifiedHNs=${modifiedHNIds.size})`);
           return;
@@ -842,7 +1046,7 @@
           // For added HNs, we don't know which segment they belong to until we re-fetch all segments
           modifiedHNIds.clear();
           modifiedHNOps.clear();
-          clearCache();
+          await clearCache();
           await processSegmentsWithHNs();
           log(`✓ HN display updated after save`);
           return;
@@ -922,104 +1126,104 @@
         // Clear modification tracking and rebuild layers
         modifiedHNIds.clear();
         modifiedHNOps.clear();
-        rebuildLayersFromCache();
+        await rebuildLayersFromCache();
         log(`✓ HN display updated after save`);
-      },
+      }),
     });
 
     // Zoom level changed — toggle visibility based on threshold, preserve cache
     sdk.Events.on({
       eventName: 'wme-map-zoom-changed',
-      eventHandler: () => {
-        const zoomLevel = sdk.Map.getZoomLevel();
+      eventHandler: safe(async () => {
+        const zoomLevel = await sdk.Map.getZoomLevel();
         const threshold = settings.disableBelowZoom;
         logDebug(`Zoom level changed to: ${zoomLevel}`);
 
         if (zoomLevel >= threshold) {
           // Above threshold: ensure layers visible and process segments
-          sdk.Map.setLayerVisibility({ layerName: LAYER_HN_LINES, visibility: settings.hnLines });
-          sdk.Map.setLayerVisibility({ layerName: `${LAYER_HN_LINES}_colored`, visibility: settings.hnLines });
-          sdk.Map.setLayerVisibility({ layerName: LAYER_HN_MARKERS, visibility: settings.hnNumbers });
-          processSegmentsWithHNs(); // Smart cache handles viewport delta
+          await sdk.Map.setLayerVisibility({ layerName: LAYER_HN_LINES, visibility: settings.hnLines });
+          await sdk.Map.setLayerVisibility({ layerName: `${LAYER_HN_LINES}_colored`, visibility: settings.hnLines });
+          await sdk.Map.setLayerVisibility({ layerName: LAYER_HN_MARKERS, visibility: settings.hnNumbers });
+          await processSegmentsWithHNs(); // Smart cache handles viewport delta
         } else {
           // Below threshold: hide layers but keep cache intact for when user zooms back in
           logDebug(`Below zoom threshold (${threshold}), hiding layers but preserving cache`);
-          sdk.Map.setLayerVisibility({ layerName: LAYER_HN_LINES, visibility: false });
-          sdk.Map.setLayerVisibility({ layerName: `${LAYER_HN_LINES}_colored`, visibility: false });
-          sdk.Map.setLayerVisibility({ layerName: LAYER_HN_MARKERS, visibility: false });
+          await sdk.Map.setLayerVisibility({ layerName: LAYER_HN_LINES, visibility: false });
+          await sdk.Map.setLayerVisibility({ layerName: `${LAYER_HN_LINES}_colored`, visibility: false });
+          await sdk.Map.setLayerVisibility({ layerName: LAYER_HN_MARKERS, visibility: false });
         }
-      },
+      }),
     });
 
     // Layer switcher checkbox toggled
     sdk.Events.on({
       eventName: 'wme-layer-checkbox-toggled',
-      eventHandler: async (checkboxInfo) => {
+      eventHandler: safe(async (checkboxInfo) => {
         logDebug(`Layer checkbox event:`, checkboxInfo);
 
         if (checkboxInfo.name === CHECKBOX_NAME_HN_LINES) {
           settings.hnLines = checkboxInfo.checked;
           logDebug(`HN Lines layer toggled: ${checkboxInfo.checked}`);
           // Set layer visibility directly
-          sdk.Map.setLayerVisibility({ layerName: LAYER_HN_LINES, visibility: checkboxInfo.checked });
-          sdk.Map.setLayerVisibility({ layerName: `${LAYER_HN_LINES}_colored`, visibility: checkboxInfo.checked });
+          await sdk.Map.setLayerVisibility({ layerName: LAYER_HN_LINES, visibility: checkboxInfo.checked });
+          await sdk.Map.setLayerVisibility({ layerName: `${LAYER_HN_LINES}_colored`, visibility: checkboxInfo.checked });
           // Redraw to re-evaluate predicates
-          sdk.Map.redrawLayer({ layerName: LAYER_HN_LINES });
-          sdk.Map.redrawLayer({ layerName: `${LAYER_HN_LINES}_colored` });
-          saveSettings();
+          await sdk.Map.redrawLayer({ layerName: LAYER_HN_LINES });
+          await sdk.Map.redrawLayer({ layerName: `${LAYER_HN_LINES}_colored` });
+          await saveSettings();
         }
         if (checkboxInfo.name === CHECKBOX_NAME_HN_MARKERS) {
           settings.hnNumbers = checkboxInfo.checked;
           logDebug(`HN Numbers layer toggled: ${checkboxInfo.checked}`);
           // Set layer visibility directly
-          sdk.Map.setLayerVisibility({ layerName: LAYER_HN_MARKERS, visibility: checkboxInfo.checked });
+          await sdk.Map.setLayerVisibility({ layerName: LAYER_HN_MARKERS, visibility: checkboxInfo.checked });
           // Redraw to re-evaluate predicates
-          sdk.Map.redrawLayer({ layerName: LAYER_HN_MARKERS });
-          saveSettings();
+          await sdk.Map.redrawLayer({ layerName: LAYER_HN_MARKERS });
+          await saveSettings();
         }
-      },
+      }),
     });
 
     // Track real-time HN edits (moved, updated, deleted, added)
     // These fire before save; we skip rendering modified HNs and let WME's native markers show drafts
     sdk.Events.on({
       eventName: 'wme-house-number-moved',
-      eventHandler: (payload) => {
+      eventHandler: safe(async (payload) => {
         modifiedHNIds.add(payload.houseNumberId);
         modifiedHNOps.set(payload.houseNumberId, 'moved');
         logDebug(`HN moved: ${payload.houseNumberId}`);
-        rebuildLayersFromCache();
-      },
+        await rebuildLayersFromCache();
+      }),
     });
 
     sdk.Events.on({
       eventName: 'wme-house-number-updated',
-      eventHandler: (payload) => {
+      eventHandler: safe(async (payload) => {
         modifiedHNIds.add(payload.houseNumberId);
         modifiedHNOps.set(payload.houseNumberId, 'updated');
         logDebug(`HN updated: ${payload.houseNumberId}`);
-        rebuildLayersFromCache();
-      },
+        await rebuildLayersFromCache();
+      }),
     });
 
     sdk.Events.on({
       eventName: 'wme-house-number-deleted',
-      eventHandler: (payload) => {
+      eventHandler: safe(async (payload) => {
         modifiedHNIds.add(payload.houseNumberId);
         modifiedHNOps.set(payload.houseNumberId, 'deleted');
         logDebug(`HN deleted: ${payload.houseNumberId}`);
-        rebuildLayersFromCache();
-      },
+        await rebuildLayersFromCache();
+      }),
     });
 
     sdk.Events.on({
       eventName: 'wme-house-number-added',
-      eventHandler: (payload) => {
+      eventHandler: safe(async (payload) => {
         modifiedHNIds.add(payload.houseNumberId);
         modifiedHNOps.set(payload.houseNumberId, 'added');
         logDebug(`HN added: ${payload.houseNumberId}`);
-        rebuildLayersFromCache();
-      },
+        await rebuildLayersFromCache();
+      }),
     });
   }
 
@@ -1028,45 +1232,45 @@
   // =====================================================================
 
   /** Shortcut callback to toggle HN lines layer visibility. */
-  function onToggleHNLinesShortcut() {
+  async function onToggleHNLinesShortcut() {
     try {
       settings.hnLines = !settings.hnLines;
 
       // Update map rendering
-      sdk.Map.setLayerVisibility({ layerName: LAYER_HN_LINES, visibility: settings.hnLines });
-      sdk.Map.setLayerVisibility({ layerName: `${LAYER_HN_LINES}_colored`, visibility: settings.hnLines });
+      await sdk.Map.setLayerVisibility({ layerName: LAYER_HN_LINES, visibility: settings.hnLines });
+      await sdk.Map.setLayerVisibility({ layerName: `${LAYER_HN_LINES}_colored`, visibility: settings.hnLines });
 
       // Update sidebar checkbox state
-      sdk.LayerSwitcher.setLayerCheckboxChecked({ name: CHECKBOX_NAME_HN_LINES, isChecked: settings.hnLines });
+      await sdk.LayerSwitcher.setLayerCheckboxChecked({ name: CHECKBOX_NAME_HN_LINES, isChecked: settings.hnLines });
 
-      sdk.Map.redrawLayer({ layerName: LAYER_HN_LINES });
-      sdk.Map.redrawLayer({ layerName: `${LAYER_HN_LINES}_colored` });
-      saveSettings();
+      await sdk.Map.redrawLayer({ layerName: LAYER_HN_LINES });
+      await sdk.Map.redrawLayer({ layerName: `${LAYER_HN_LINES}_colored` });
+      await saveSettings();
     } catch (err) {
       logError('Error toggling HN Lines layer:', err);
     }
   }
 
   /** Shortcut callback to toggle HN numbers layer visibility. */
-  function onToggleHNNumbersShortcut() {
+  async function onToggleHNNumbersShortcut() {
     try {
       settings.hnNumbers = !settings.hnNumbers;
 
       // Update map rendering
-      sdk.Map.setLayerVisibility({ layerName: LAYER_HN_MARKERS, visibility: settings.hnNumbers });
+      await sdk.Map.setLayerVisibility({ layerName: LAYER_HN_MARKERS, visibility: settings.hnNumbers });
 
       // Update sidebar checkbox state
-      sdk.LayerSwitcher.setLayerCheckboxChecked({ name: CHECKBOX_NAME_HN_MARKERS, isChecked: settings.hnNumbers });
+      await sdk.LayerSwitcher.setLayerCheckboxChecked({ name: CHECKBOX_NAME_HN_MARKERS, isChecked: settings.hnNumbers });
 
-      sdk.Map.redrawLayer({ layerName: LAYER_HN_MARKERS });
-      saveSettings();
+      await sdk.Map.redrawLayer({ layerName: LAYER_HN_MARKERS });
+      await saveSettings();
     } catch (err) {
       logError('Error toggling HN Numbers layer:', err);
     }
   }
 
   /** Register keyboard shortcuts for toggling HN layers, with conflict detection and key binding restoration. */
-  function setupShortcuts() {
+  async function setupShortcuts() {
     logDebug('Setting up shortcuts');
 
     const shortcutDefs = [
@@ -1088,8 +1292,8 @@
 
     for (const sc of shortcutDefs) {
       // Delete old registration on script reload
-      if (sdk.Shortcuts.isShortcutRegistered({ shortcutId: sc.id })) {
-        sdk.Shortcuts.deleteShortcut({ shortcutId: sc.id });
+      if (await sdk.Shortcuts.isShortcutRegistered({ shortcutId: sc.id })) {
+        await sdk.Shortcuts.deleteShortcut({ shortcutId: sc.id });
       }
 
       // Normalize stored shortcut
@@ -1102,14 +1306,14 @@
 
       // Check for key conflicts BEFORE attempting to register
       let shortcutKeys = settings[sc.settingsKey].combo;
-      if (shortcutKeys && sdk.Shortcuts.areShortcutKeysInUse({ shortcutKeys })) {
+      if (shortcutKeys && (await sdk.Shortcuts.areShortcutKeysInUse({ shortcutKeys }))) {
         logDebug(`"${sc.desc}" key conflict (${shortcutKeys}), registering without key`);
         shortcutKeys = null;
         settings[sc.settingsKey] = { raw: null, combo: null };
       }
 
       try {
-        sdk.Shortcuts.createShortcut({
+        await sdk.Shortcuts.createShortcut({
           shortcutId: sc.id,
           description: sc.desc,
           callback: sc.cb,
@@ -1376,6 +1580,44 @@
 
     panelDiv.appendChild(markerCard.card);
 
+    // Nudge House Numbers card (only for users who pass the nudge permission check)
+    if (canNudge(await sdk.State.getUserInfo())) {
+      const nudgeCard = makeCard('fa-arrow-right', 'Nudge House Numbers');
+      const nudgeDesc = document.createElement('p');
+      nudgeDesc.textContent = 'Nudge yellow HNs on selected segment(s) to transition from untouched to touched.';
+      nudgeDesc.style.fontSize = '12px';
+      nudgeDesc.style.margin = '5px 10px';
+      nudgeDesc.style.color = '#666';
+      nudgeCard.body.appendChild(nudgeDesc);
+
+      // Permission note
+      const permNote = document.createElement('p');
+      permNote.textContent = 'Available to: Country Managers, Area Managers (Level 5+), or Rank 6+ editors';
+      permNote.style.fontSize = '10px';
+      permNote.style.margin = '3px 10px';
+      permNote.style.color = '#999';
+      permNote.style.fontStyle = 'italic';
+      nudgeCard.body.appendChild(permNote);
+
+      const nudgeBtn = document.createElement('button');
+      nudgeBtn.id = 'nudge-btn';
+      nudgeBtn.textContent = 'Nudge Selected Segments';
+      nudgeBtn.style.width = '100%';
+      nudgeBtn.style.padding = '8px';
+      nudgeBtn.style.margin = '5px 10px';
+      nudgeBtn.style.backgroundColor = '#0066cc';
+      nudgeBtn.style.color = '#fff';
+      nudgeBtn.style.border = 'none';
+      nudgeBtn.style.borderRadius = '4px';
+      nudgeBtn.style.cursor = 'pointer';
+      nudgeBtn.style.fontSize = '12px';
+      nudgeBtn.style.fontWeight = 'bold';
+      nudgeBtn.addEventListener('click', () => handleNudgeClick().catch((err) => logError('Nudge failed:', err)));
+      nudgeCard.body.appendChild(nudgeBtn);
+
+      panelDiv.appendChild(nudgeCard.card);
+    }
+
     // Legend card
     const legendCard = makeCard('fa-eyedropper', 'Color Legend');
     const legendBody = legendCard.body;
@@ -1406,62 +1648,64 @@
     tabPane.appendChild(panelDiv);
 
     // ── Event listeners for settings ───────────────────────────────────
-    zoomInput.addEventListener('change', (e) => {
+    zoomInput.addEventListener('change', safe(async (e) => {
       settings.disableBelowZoom = Math.min(22, Math.max(16, parseInt(e.target.value, 10)));
       e.target.value = settings.disableBelowZoom;
-      saveSettings();
-    });
+      await saveSettings();
+    }));
 
-    zIndexSelect.addEventListener('change', (e) => {
+    zIndexSelect.addEventListener('change', safe(async (e) => {
       settings.zIndexPosition = e.target.value;
-      saveSettings();
+      await saveSettings();
       if (e.target.value !== 'disabled') {
-        setZIndex();
+        await setZIndex();
       }
       logDebug(`Z-index position set to: ${e.target.value}`);
-    });
+    }));
 
     // Marker radius slider
-    radiusSlider.addEventListener('input', (e) => {
+    radiusSlider.addEventListener('input', safe(async (e) => {
       const newRadius = parseInt(e.target.value, 10);
       settings.markerPointRadius = newRadius;
       radiusValue.textContent = newRadius;
-      sdk.Map.redrawLayer({ layerName: LAYER_HN_MARKERS });
+      await sdk.Map.redrawLayer({ layerName: LAYER_HN_MARKERS });
       logDebug(`Marker point radius: ${newRadius}`);
-    });
+    }));
 
-    radiusSlider.addEventListener('change', () => {
-      saveSettings();
-    });
+    radiusSlider.addEventListener('change', safe(async () => {
+      await saveSettings();
+    }));
 
     // Marker font size slider
-    fontSlider.addEventListener('input', (e) => {
+    fontSlider.addEventListener('input', safe(async (e) => {
       const newSize = parseInt(e.target.value, 10);
       settings.markerFontSize = newSize;
       fontValue.textContent = newSize + 'px';
-      sdk.Map.redrawLayer({ layerName: LAYER_HN_MARKERS });
+      await sdk.Map.redrawLayer({ layerName: LAYER_HN_MARKERS });
       logDebug(`Marker font size: ${newSize}px`);
-    });
+    }));
 
-    fontSlider.addEventListener('change', () => {
-      saveSettings();
-    });
+    fontSlider.addEventListener('change', safe(async () => {
+      await saveSettings();
+    }));
 
     // Marker fill opacity slider
-    opacitySlider.addEventListener('input', (e) => {
+    opacitySlider.addEventListener('input', safe(async (e) => {
       const newOpacity = parseFloat(e.target.value);
       settings.markerFillOpacity = newOpacity;
       opacityValue.textContent = (newOpacity * 100).toFixed(0) + '%';
-      sdk.Map.redrawLayer({ layerName: LAYER_HN_MARKERS });
+      await sdk.Map.redrawLayer({ layerName: LAYER_HN_MARKERS });
       logDebug(`Marker fill opacity: ${(newOpacity * 100).toFixed(0)}%`);
-    });
+    }));
 
-    opacitySlider.addEventListener('change', () => {
-      saveSettings();
-    });
+    opacitySlider.addEventListener('change', safe(async () => {
+      await saveSettings();
+    }));
 
-    // Save settings on page unload (captures user-modified shortcuts from WME UI)
-    window.addEventListener('beforeunload', saveSettings, false);
+    // Persist settings on page unload. Sync persist only: an async save cannot finish during unload.
+    // Shortcut keys are captured at init, on each script shortcut, and on each save; a WME-side key change
+    // made after the last capture is not saved until the next save.
+    window.addEventListener('beforeunload', persistSettings, false);
   }
 
   // =====================================================================
@@ -1472,7 +1716,7 @@
    * Compares current version against the previously saved version in settings.
    */
   /** Display script update notification if version has changed. */
-  function showScriptInfoAlert() {
+  async function showScriptInfoAlert() {
     if (SHOW_UPDATE_MESSAGE && SCRIPT_VERSION !== settings.lastVersion) {
       let releaseNotes = "<p>What's New:</p>";
       if (SCRIPT_VERSION_CHANGES.length > 0) {
@@ -1482,7 +1726,7 @@
       }
       WazeWrap.Interface.ShowScriptUpdate(GM_info.script.name, SCRIPT_VERSION, releaseNotes, DOWNLOAD_URL);
       settings.lastVersion = SCRIPT_VERSION;
-      saveSettings();
+      await saveSettings();
     }
   }
 
@@ -1497,6 +1741,7 @@
 
       // Get SDK using bootstrap() pattern (like WMEPIE)
       sdk = await bootstrap({
+        mode: 'async',
         scriptName: _SCRIPT_LONG_NAME,
         scriptUpdateMonitor: {
           downloadUrl: DOWNLOAD_URL,
@@ -1516,13 +1761,15 @@
       await setupUI();
 
       // Setup event listeners
-      setupEventListeners();
+      await setupEventListeners();
 
-      // Setup shortcuts
-      setupShortcuts();
+      // Capture keys WME kept from the last session (user edits made in WME settings), then register, then capture what WME holds
+      await captureShortcutKeys();
+      await setupShortcuts();
+      await captureShortcutKeys();
 
       //Check for Script Updates
-      showScriptInfoAlert();
+      await showScriptInfoAlert();
 
       // Process initial segments
       await processSegmentsWithHNs(); // Handles zoom check and segment fetching internally
@@ -1535,5 +1782,5 @@
   }
 
   // Start initialization
-  initialize();
+  await initialize();
 })();
