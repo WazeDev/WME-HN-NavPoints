@@ -2,7 +2,7 @@
 // @name            WME HN NavPoints
 // @namespace       https://greasyfork.org/users/166843
 // @description     Shows navigation points of all house numbers in WME
-// @version         2026.11.03.00
+// @version         2026.11.23.00
 // @author          dBsooner / JS55CT
 // @grant           GM_info
 // @grant           GM_xmlhttpRequest
@@ -34,7 +34,7 @@
   // **************************************************************************************************************
   const SHOW_UPDATE_MESSAGE = true;
   const SCRIPT_VERSION_CHANGES = [
-    'Updated to use the new SDK Async Mode!',
+    'Fixed yellow dots appearing on the map at startup when NavPoints Numbers is off!',
   ];
 
   // =====================================================================
@@ -1756,6 +1756,11 @@
 
       // Create layers
       await createLayers();
+
+      // Layers are created visible by default; sync them with saved checkbox state so hidden layers don't show fallback-styled features
+      await sdk.Map.setLayerVisibility({ layerName: LAYER_HN_LINES, visibility: settings.hnLines });
+      await sdk.Map.setLayerVisibility({ layerName: `${LAYER_HN_LINES}_colored`, visibility: settings.hnLines });
+      await sdk.Map.setLayerVisibility({ layerName: LAYER_HN_MARKERS, visibility: settings.hnNumbers });
 
       // Setup UI (includes marker styling controls)
       await setupUI();
